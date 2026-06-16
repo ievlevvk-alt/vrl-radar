@@ -200,6 +200,33 @@ struct GeneratedTarget {
         
         return result & 0x0FFFFF;
     }
+
+    // Параметры линейного движения (добавить)
+    bool use_linear_motion{false};          // Флаг использования линейного движения
+    double speed_m_per_s{0.0};              // Скорость в м/с
+    double course_deg{0.0};                 // Курс в градусах
+    double initial_x_km{0.0};               // Начальная X (км)
+    double initial_y_km{0.0};               // Начальная Y (км)
+
+    // Метод для обновления позиции при линейном движении
+    void update_linear_position(double time_delta_seconds) {
+        if (!use_linear_motion) return;
+        double course_rad = course_deg * M_PI / 180.0;
+        double vx = speed_m_per_s * sin(course_rad);
+        double vy = speed_m_per_s * cos(course_rad);
+        // Пересчет в км/с
+        double vx_km_s = vx / 1000.0;
+        double vy_km_s = vy / 1000.0;
+
+        // Обновляем положение (в км)
+        // azimuth_deg и range_km пересчитываются из x,y
+        double current_x_km = initial_x_km + vx_km_s * time_delta_seconds;
+        double current_y_km = initial_y_km + vy_km_s * time_delta_seconds;
+        range_km = sqrt(current_x_km*current_x_km + current_y_km*current_y_km);
+        azimuth_deg = atan2(current_x_km, current_y_km) * 180.0 / M_PI;
+        if (azimuth_deg < 0) azimuth_deg += 360.0;
+    }
+
 };
 
 

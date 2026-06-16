@@ -96,6 +96,22 @@ SystemConfig SystemConfig::load_from_file(const std::string& filename) {
                 } else if (key == "alternate_data_altitude") {
                     // ВАЖНО: ЭТА СТРОКА ДОЛЖНА БЫТЬ ЗДЕСЬ, ВНУТРИ if (in_target_section)
                     current_target.alternate_data_altitude = (value == "true" || value == "1");
+                }
+                // Внутри цикла парсинга, в секции целей
+                else if (key == "use_linear_motion") {
+                    current_target.use_linear_motion = (value == "true" || value == "1");
+                }
+                else if (key == "speed_m_per_s") {
+                    current_target.speed_m_per_s = std::stod(value);
+                }
+                else if (key == "course_deg") {
+                    current_target.course_deg = std::stod(value);
+                }
+                else if (key == "initial_x_km") {
+                    current_target.initial_x_km = std::stod(value);
+                }
+                else if (key == "initial_y_km") {
+                    current_target.initial_y_km = std::stod(value);                   
                 } else if (key == "end") {
                     if (target_type == "RBS" && !current_target.name.empty()) {
                         current_target.type = GeneratedTarget::Type::RBS;
@@ -379,10 +395,17 @@ ScanReplies RadarSystem::generate_test_scan(uint16_t azimuth, uint32_t /*timesta
         return az_diff <= half_beamwidth_deg;
     };
     
+    // В начале функции generate_test_scan, после получения текущего оборота
+    double time_delta_seconds = current_revolution_ * 2.5; // ~2.5 секунды на оборот
+
     // Генерация RBS целей
     for (auto& target : config_.rbs_targets) {
         if (!target.enabled) continue;
         
+        if (target.use_linear_motion) {
+            target.update_linear_position(time_delta_seconds);
+        }
+
         double current_az_deg_target = target.azimuth_deg + current_revolution_ * target.azimuth_speed_deg_per_rev;
         while (current_az_deg_target >= 360.0) current_az_deg_target -= 360.0;
         while (current_az_deg_target < 0) current_az_deg_target += 360.0;
@@ -432,6 +455,10 @@ ScanReplies RadarSystem::generate_test_scan(uint16_t azimuth, uint32_t /*timesta
     // Генерация УВД целей
     for (auto& target : config_.uvd_targets) {
         if (!target.enabled) continue;
+
+        if (target.use_linear_motion) {
+            target.update_linear_position(time_delta_seconds);
+        }
         
         // Отладочный вывод для проверки параметров
         if (config_.tracker.debug_mode && current_revolution_ % 10 == 0 && azimuth == 0) {
