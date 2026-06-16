@@ -9,7 +9,8 @@
 namespace radar {
 
 ClusterProcessor::ClusterProcessor(const RadarConfig& config) 
-    : config_(config) {}
+    : config_(config), reply_processor_(config) {}
+
 
 std::vector<ClusterProcessor::RangeGroup> ClusterProcessor::group_by_range(const TargetCluster& cluster) {
     std::vector<RangeGroup> groups;
@@ -153,41 +154,53 @@ std::optional<TargetReport> ClusterProcessor::process_rbs_group(const RangeGroup
     // Анализ кодов
     std::map<uint16_t, int> code_counts;
     std::map<uint16_t, const RBSReply*> code_to_reply;
-    std::map<uint16_t, bool> code_spi;  // был ли SPI для этого кода
+    std::map<uint16_t, bool> code_spi;
+    std::map<uint16_t, double> code_confidence;  // <--- ДОБАВИТЬ
     
     for (const auto* reply : group.rbs_replies) {
         code_counts[reply->code12]++;
         code_to_reply[reply->code12] = reply;
-        // Если хотя бы в одном ответе с этим кодом был SPI, запоминаем
         if (reply->spi) {
             code_spi[reply->code12] = true;
         }
+        
+        // Анализ качества ответа через ReplyProcessor
+        ReplyFeatures features = reply_processor_.analyze_rbs(*reply);
+        code_confidence[reply->code12] = std::max(code_confidence[reply->code12], features.confidence);
     }
     
-    // Выбираем код с максимальным количеством появлений
+    // Выбираем код с максимальным количеством появлений И высокой уверенностью
     uint16_t best_code = 0;
     int max_count = 0;
+    double best_confidence = 0;
+    
     for (const auto& [code, count] : code_counts) {
-        if (count > max_count) {
+        double confidence = code_confidence[code];
+        // Приоритет: сначала уверенность, потом количество
+        if (confidence > best_confidence || 
+            (confidence == best_confidence && count > max_count)) {
+            best_confidence = confidence;
             max_count = count;
             best_code = code;
         }
     }
     
-    if (max_count > 0) {
+    if (max_count > 0 && best_confidence > 0.3) {  // Порог уверенности 0.3
         const auto* best_reply = code_to_reply[best_code];
         report.rbs.mode3a_code = best_code;
-        // SPI true, если был хотя бы в одном ответе с этим кодом
         report.rbs.spi = code_spi[best_code];
         
-        // Усреднённая амплитуда как сигналstrength
-        report.signal_strength = (best_reply->f1() + best_reply->f2()) / 2;
+        // Используем уверенность из ReplyProcessor
+        report.signal_strength = static_cast<uint8_t>(best_confidence * 255);
         
         // Проверяем SLS
         report.is_sls_blanked = check_sidelobe(*best_reply);
         
-        // Проверяем валидность
-        report.is_garbled = !utils::validate_rbs(*best_reply, config_);
+        // Вместо utils::validate_rbs используем confidence
+        report.is_garbled = (best_confidence < 0.5);  // Если уверенность < 0.5 - считаем искаженным
+    } else {
+        // Недостаточная уверенность - не формируем отчет
+        return std::nullopt;
     }
     
     return report;
@@ -203,65 +216,55 @@ std::optional<TargetReport> ClusterProcessor::process_uvd_group(const RangeGroup
     report.is_sls_blanked = false;
     report.is_garbled = false;
     
-    // Собираем азимуты для усреднения
     std::vector<uint16_t> azimuths;
     for (const auto* reply : group.uvd_replies) {
         azimuths.push_back(reply->azimuth);
         report.sources.push_back(reply);
     }
     
-    // Вычисляем средний азимут и дальность
     report.azimuth_deg = average_azimuth(azimuths) * config_.azimuth_per_bin;
     report.range_m = group.nominal_range * config_.range_bin_uvd;
-    
-    // Преобразование в декартовы координаты
     radar::polar_to_xy(report.range_m, report.azimuth_deg, report.x, report.y);
     
-    // Анализ данных УВД
     std::map<uint32_t, int> data_counts;
     std::map<uint32_t, const UVDReply*> data_to_reply;
+    std::map<uint32_t, double> data_confidence;
     
     for (const auto* reply : group.uvd_replies) {
         data_counts[reply->data20]++;
         data_to_reply[reply->data20] = reply;
+        
+        ReplyFeatures features = reply_processor_.analyze_uvd(*reply);
+        data_confidence[reply->data20] = std::max(data_confidence[reply->data20], features.confidence);
     }
     
-    // Выбираем данные с максимальным количеством появлений
     uint32_t best_data = 0;
     int max_count = 0;
+    double best_confidence = 0;
+    
     for (const auto& [data, count] : data_counts) {
-        if (count > max_count) {
+        double confidence = data_confidence[data];
+        if (confidence > best_confidence ||
+            (confidence == best_confidence && count > max_count)) {
+            best_confidence = confidence;
             max_count = count;
             best_data = data;
         }
     }
     
-    if (max_count > 0) {
+    if (max_count > 0 && best_confidence > 0.3) {
         const auto* best_reply = data_to_reply[best_data];
-        
-        // Декодируем информацию
         decode_uvd_info(best_data, report);
-        
-        // Усреднённая амплитуда
-        if (!group.uvd_replies.empty()) {
-            // Берём первый отсчёт как пример сигнала
-            report.signal_strength = group.uvd_replies[0]->ether_amplitudes[0];
-        }
-        
-        // Проверяем SLS
+        report.signal_strength = static_cast<uint8_t>(best_confidence * 255);
         report.is_sls_blanked = check_sidelobe(*best_reply);
-        
-        // Проверяем валидность
-        report.is_garbled = !utils::validate_uvd(*best_reply, config_);
-        
-        // Если есть error_mask в самом ответе, используем его для определения is_garbled
-        if (best_reply->error_mask != 0) {
-            report.is_garbled = true;
-        }
+        report.is_garbled = (best_confidence < 0.5) || (best_reply->error_mask != 0);
+    } else {
+        return std::nullopt;
     }
     
     return report;
 }
+
 
 std::vector<TargetReport> ClusterProcessor::process_garbled_group(const RangeGroup& group) {
     std::vector<TargetReport> reports;

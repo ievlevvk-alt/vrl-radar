@@ -2,6 +2,7 @@
 #pragma once
 
 #include "replies.h"
+#include "utils.h"
 #include "types.h"
 #include <vector>
 #include <array>
@@ -181,6 +182,7 @@ private:
 
 // Вспомогательные функции для RBSReply
 namespace utils {
+    #if 0
     inline size_t bit_position(int bit_idx) {
         static constexpr uint8_t bit_to_ether[12] = {1,2,3,4,5,6,8,9,10,11,12,13};
         if (bit_idx >= 0 && bit_idx < 12) {
@@ -204,6 +206,7 @@ namespace utils {
         
         return high_amps > reply.ether_amplitudes.size() / 3;
     }
+    #endif
 }
 
 } // namespace radar

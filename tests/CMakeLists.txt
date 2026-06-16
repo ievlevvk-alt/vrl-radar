@@ -26,9 +26,12 @@ add_executable(test_cluster_processor test_cluster_processor.cpp)
 target_link_libraries(test_cluster_processor PRIVATE radar_sim)
 add_test(NAME ClusterProcessorTest COMMAND test_cluster_processor)
 
-# file: tests/CMakeLists.txt (дополнение)
-
-# Тест для garbling solver
+# Тест для garbling_solver
 add_executable(test_garbling_solver test_garbling_solver.cpp)
 target_link_libraries(test_garbling_solver PRIVATE radar_sim)
 add_test(NAME GarblingSolverTest COMMAND test_garbling_solver)
+
+# Тест для track_manager
+add_executable(test_track_manager test_track_manager.cpp)
+target_link_libraries(test_track_manager PRIVATE radar_sim)
+add_test(NAME TrackManagerTest COMMAND test_track_manager)

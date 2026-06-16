@@ -7,6 +7,15 @@
 namespace radar {
 namespace utils {
 
+// Вспомогательная функция для получения позиции бита в эфирном представлении
+inline size_t bit_position(int bit_idx) {
+    static constexpr uint8_t bit_to_ether[12] = {1,2,3,4,5,6,8,9,10,11,12,13};
+    if (bit_idx >= 0 && bit_idx < 12) {
+        return bit_to_ether[bit_idx];
+    }
+    return 0;
+}
+
 // Проверка перекрытия двух ответов (по координатам)
 inline bool is_potential_overlap(
     uint16_t az1, uint16_t r1,

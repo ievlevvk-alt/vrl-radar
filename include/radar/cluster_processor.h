@@ -4,6 +4,7 @@
 #include "cluster_tracker.h"
 #include "replies.h"
 #include "garbling_solver.h"
+#include "radar/reply_processor.h"
 #include <vector>
 #include <map>
 #include <set>
@@ -17,6 +18,7 @@ namespace radar {
 class ClusterProcessor {
 public:
     ClusterProcessor(const RadarConfig& config);
+    ReplyProcessor reply_processor_;
     
     // Основной метод обработки кластера
     std::vector<TargetReport> process_cluster(const TargetCluster& cluster);
