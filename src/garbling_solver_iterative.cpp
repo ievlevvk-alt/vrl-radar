@@ -1,5 +1,6 @@
 // file: src/garbling_solver_iterative.cpp
 #include "radar/garbling_solver.h"
+#include "radar/utils.h"  // Добавляем
 #include <cmath>
 #include <algorithm>
 
@@ -80,52 +81,33 @@ SeparationResult<RBSReply> IterativeSubtractionSolver::separate_rbs(
         return result;
     }
     
-    std::vector<RBSReply> current_mixture = mixture;
+    std::vector<RBSReply> current = mixture;
     std::vector<RBSReply> extracted;
     
-    for (int iter = 0; iter < max_iterations_; ++iter) {
-        // Находим доминирующий ответ
-        auto dominant = find_dominant_reply(current_mixture);
+    for (int iter = 0; iter < max_iterations_ && !current.empty(); ++iter) {
+        auto dominant = find_dominant_reply(current);
         if (!dominant) break;
         
-        // Проверяем, достаточно ли он сильный
-        double total_energy = 0;
-        for (const auto& reply : current_mixture) {
-            for (uint8_t amp : reply.ether_amplitudes) {
-                total_energy += amp;
+        // Декодируем код доминирующего ответа
+        uint16_t code = 0;
+        for (int i = 0; i < 12; ++i) {
+            size_t pos = utils::bit_position(i);  // Используем utils::
+            if (dominant->ether_amplitudes[pos] > config_.min_amplitude * 3) {
+                code |= (1 << i);
             }
         }
+        dominant->code12 = code;
         
-        double dominant_energy = 0;
-        for (uint8_t amp : dominant->ether_amplitudes) {
-            dominant_energy += amp;
-        }
-        
-        if (dominant_energy / total_energy < min_amplitude_ratio_) {
-            break;  // Слишком слабый для надежного выделения
-        }
-        
-        // Извлекаем доминирующий ответ
         extracted.push_back(*dominant);
-        
-        // Вычитаем его из смеси
-        current_mixture = subtract_reply(current_mixture, *dominant);
-        
-        if (current_mixture.empty()) break;
+        current = subtract_reply(current, *dominant);
     }
     
     result.separated_replies = extracted;
-    
-    // Оценка качества
-    if (extracted.size() == mixture.size()) {
-        result.confidence = 0.9;
-        result.ambiguous = false;
-    } else if (extracted.size() > 0) {
-        result.confidence = 0.7;
-        result.ambiguous = (extracted.size() < mixture.size());
-    }
+    result.confidence = evaluate_separation_quality(mixture, extracted);
+    result.ambiguous = (extracted.size() < mixture.size());
     
     return result;
 }
+
 
 } // namespace radar

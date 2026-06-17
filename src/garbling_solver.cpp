@@ -1,5 +1,6 @@
 // file: src/garbling_solver.cpp
 #include "radar/garbling_solver.h"
+#include "radar/utils.h"  // Добавляем
 #include <iostream>
 #include <algorithm>
 #include <cmath>
@@ -26,6 +27,7 @@ void GarblingSolver::log(const std::string& msg) const {
 ThresholdGarblingSolver::ThresholdGarblingSolver(const RadarConfig& config, uint8_t threshold)
     : GarblingSolver(config), threshold_(threshold) {}
 
+// В ThresholdGarblingSolver::detect_possible_codes_rbs заменить
 std::vector<uint16_t> ThresholdGarblingSolver::detect_possible_codes_rbs(
     const std::array<uint8_t, RBSReply::ETHER_POSITIONS>& mixture) {
     
@@ -34,7 +36,7 @@ std::vector<uint16_t> ThresholdGarblingSolver::detect_possible_codes_rbs(
     
     // Анализируем каждую позицию бита
     for (int i = 0; i < 12; ++i) {
-        size_t pos = utils::bit_position(i);
+        size_t pos = utils::bit_position(i);  // Используем utils::
         if (mixture[pos] > threshold_) {
             code_votes[1 << i] += 1;
         }
@@ -42,8 +44,10 @@ std::vector<uint16_t> ThresholdGarblingSolver::detect_possible_codes_rbs(
     
     // Проверяем комбинации битов
     for (int i = 0; i < 12; i += 2) {
-        uint8_t amp1 = mixture[utils::bit_position(i)];
-        uint8_t amp2 = mixture[utils::bit_position(i+1)];
+        size_t pos1 = utils::bit_position(i);
+        size_t pos2 = utils::bit_position(i+1);
+        uint8_t amp1 = mixture[pos1];
+        uint8_t amp2 = mixture[pos2];
         
         if (amp1 > threshold_ && amp2 > threshold_) {
             code_votes[(1 << i) | (1 << (i+1))] += 2;
@@ -65,6 +69,7 @@ std::vector<uint16_t> ThresholdGarblingSolver::detect_possible_codes_rbs(
     
     return possible_codes;
 }
+
 
 bool ThresholdGarblingSolver::check_code_presence_rbs(
     uint16_t code,

@@ -5,6 +5,7 @@
 #include "cluster_processor.h"
 #include "simulator.h"
 #include "track_manager.h"
+#include "config_parser.h"
 #include <string>
 #include <fstream>
 #include <memory>
@@ -12,6 +13,7 @@
 #include <functional>
 #include <vector>
 #include <algorithm>
+#include <iostream>  // Добавляем для std::cerr
 
 namespace radar {
 
@@ -250,12 +252,17 @@ struct SystemConfig {
     std::vector<GeneratedTarget> uvd_targets;
     
     static SystemConfig load_from_file(const std::string& filename);
+    
+    // Добавляем новый метод
+    static SystemConfig load_from_parser(const ConfigParser& parser);
+    
     void save_to_file(const std::string& filename) const;
     
     bool has_targets() const {
         return !rbs_targets.empty() || !uvd_targets.empty();
     }
 };
+
 
 // Класс, объединяющий всю систему
 class RadarSystem {

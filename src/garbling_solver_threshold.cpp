@@ -1,5 +1,6 @@
-// file: src/garbling_solver_threshold.cpp
+// src/garbling_solver_threshold.cpp
 #include "radar/garbling_solver.h"
+#include "radar/utils.h"  // Добавляем для utils::bit_position
 #include <algorithm>
 #include <cmath>
 #include <map>
@@ -19,11 +20,9 @@ std::vector<uint16_t> ThresholdGarblingSolver::detect_possible_codes_rbs(
     std::array<bool, 12> bit_present;
     std::array<uint8_t, 12> bit_amplitudes;
     
-    // Маппинг эфирных позиций на биты (как в RBSReply::bit())
-    static constexpr uint8_t ether_to_bit[12] = {1,2,3,4,5,6,8,9,10,11,12,13};
-    
     for (int i = 0; i < 12; ++i) {
-        uint8_t amp = mixture[ether_to_bit[i]];
+        size_t pos = utils::bit_position(i);  // Используем utils::bit_position
+        uint8_t amp = mixture[pos];
         bit_present[i] = (amp > threshold_);
         bit_amplitudes[i] = amp;
     }
@@ -98,7 +97,8 @@ bool ThresholdGarblingSolver::check_code_presence_rbs(
     
     for (int i = 0; i < 12; ++i) {
         bool bit_expected = (code >> i) & 1;
-        uint8_t amplitude = mixture[RBSReply::bit_position(i)];
+        size_t pos = utils::bit_position(i);  // Используем utils::bit_position
+        uint8_t amplitude = mixture[pos];
         
         if (amplitude > threshold_) {
             if (bit_expected) matching_bits++;
@@ -109,14 +109,18 @@ bool ThresholdGarblingSolver::check_code_presence_rbs(
     // Если бит ожидается, но амплитуда низкая - это может быть подавление
     for (int i = 0; i < 12; ++i) {
         bool bit_expected = (code >> i) & 1;
-        uint8_t amplitude = mixture[RBSReply::bit_position(i)];
+        size_t pos = utils::bit_position(i);
+        uint8_t amplitude = mixture[pos];
         
         if (bit_expected && amplitude <= threshold_) {
             // Ожидаемый бит отсутствует - возможно подавлен перекрытием
             // Проверяем соседние позиции
-            if (i > 0 && mixture[RBSReply::bit_position(i-1)] > threshold_ * 2) {
-                // Возможно смещение из-за перекрытия
-                total_bits++;
+            if (i > 0) {
+                size_t prev_pos = utils::bit_position(i-1);
+                if (mixture[prev_pos] > threshold_ * 2) {
+                    // Возможно смещение из-за перекрытия
+                    total_bits++;
+                }
             }
         }
     }
@@ -183,7 +187,7 @@ SeparationResult<RBSReply> ThresholdGarblingSolver::separate_rbs(
             } else {
                 int bit_idx = -1;
                 for (int b = 0; b < 12; ++b) {
-                    if (RBSReply::bit_position(b) == i) {
+                    if (utils::bit_position(b) == i) {  // Используем utils::bit_position
                         bit_idx = b;
                         break;
                     }
@@ -212,6 +216,32 @@ SeparationResult<RBSReply> ThresholdGarblingSolver::separate_rbs(
     return result;
 }
 
-// Аналогично для UVD...
+// Реализация для UVD (заглушка, можно расширить позже)
+SeparationResult<UVDReply> ThresholdGarblingSolver::separate_uvd(
+    const std::vector<UVDReply>& mixture,
+    const std::vector<uint32_t>& expected_codes) {
+    
+    SeparationResult<UVDReply> result;
+    result.method_used = "Threshold";
+    
+    if (mixture.empty()) {
+        result.confidence = 1.0;
+        return result;
+    }
+    
+    if (mixture.size() == 1) {
+        result.separated_replies = mixture;
+        result.confidence = 1.0;
+        return result;
+    }
+    
+    // TODO: Полная реализация для UVD
+    // Пока просто возвращаем первый ответ
+    result.separated_replies.push_back(mixture[0]);
+    result.confidence = 0.5;
+    result.ambiguous = true;
+    
+    return result;
+}
 
 } // namespace radar

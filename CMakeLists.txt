@@ -42,6 +42,9 @@ add_library(radar_sim
     src/kalman_filter.cpp
     src/track_manager.cpp
     src/reply_processor.cpp
+    src/config_parser.cpp
+    src/garbling_solver_threshold.cpp
+    src/garbling_solver_iterative.cpp
 )
 
 # Подключаем тесты
@@ -76,3 +79,7 @@ target_link_libraries(4_radar_player
     ${SDL2_LIBRARIES} 
     ${SDL2_TTF_LIBRARIES}
 )
+
+# Тестовая утилита для парсера
+add_executable(test_config_parser tools/test_config_parser.cpp)
+target_link_libraries(test_config_parser radar_sim)
