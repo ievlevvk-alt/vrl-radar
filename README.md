@@ -17,5 +17,11 @@
 # 3. Трековая обработка
 ./3_track_processing plots.txt tracks.txt 5.0 30.0 3 10 2.0 0.5
 
+# 2_3 Запуск с конфигом по умолчанию
+./2_3_combined
+
+# Запуск с указанием конфига, входного и выходного файлов
+./2_3_combined radar.conf replies.txt tracks_combined.txt
+
 # 4. Визуализация с разверткой (5 секунд на оборот)
 ./4_radar_player replies.txt plots.txt tracks.txt

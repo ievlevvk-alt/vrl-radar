@@ -64,13 +64,17 @@ endif()
 add_executable(1_generate_replies tools/1_generate_replies.cpp)
 target_link_libraries(1_generate_replies radar_sim)
 
-# Этап 2: Формирование плотов
+# Этап 2: Формирование плотов (отдельно)
 add_executable(2_form_plots tools/2_form_plots.cpp)
 target_link_libraries(2_form_plots radar_sim)
 
-# Этап 3: Трековая обработка
+# Этап 3: Трековая обработка (отдельно)
 add_executable(3_track_processing tools/3_track_processing.cpp)
 target_link_libraries(3_track_processing radar_sim)
+
+# Этап 2+3: Объединённая обработка (формирование плотов + трековая обработка)
+add_executable(2_3_combined tools/2_3_combined.cpp)
+target_link_libraries(2_3_combined radar_sim)
 
 # Этап 4: Плеер с отображением
 add_executable(4_radar_player tools/4_radar_player.cpp)
