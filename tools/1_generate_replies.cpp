@@ -152,10 +152,10 @@ void generate_replies(const SystemConfig& config, double duration_seconds,
     }
 
     out << "# Generated Replies and Antenna Markers\n";
-    out << "# Format: time_sec,azimuth,range,type,code_data,altitude,spi,sls_ratio,is_valid\n";
+    out << "# Format: time_sec,azimuth,range,type,code_data,altitude,spi,sls_ratio,is_valid,is_garble\n";
     out << "# Special markers:\n";
-    out << "#   NORTH - time_sec,0,0,NORTH,0,0,0,0,0\n";
-    out << "#   SECTOR - time_sec,azimuth,0,SECTOR,0,0,0,0,0\n";
+    out << "#   NORTH - time_sec,0,0,NORTH,0,0,0,0,0,0  (переход через Север)\n";
+    out << "#   SECTOR - time_sec,azimuth,0,SECTOR,0,0,0,0,0,0  (каждый 128-й дискрет)\n";
     out << "# " << std::string(80, '-') << "\n";
 
     SimulatorConfig sim_config;
@@ -233,14 +233,16 @@ void generate_replies(const SystemConfig& config, double duration_seconds,
 
         // --- МАРКЕРЫ ---
         if (!first && azimuth < prev_azimuth && (prev_azimuth - azimuth) > 2048) {
-            out << std::fixed << std::setprecision(6) << time_sec << ",0,0,NORTH,0,0,0,0,0\n";
+            // Север
+            out << std::fixed << std::setprecision(6) << time_sec << ",0,0,NORTH,0,0,0,0,0,0\n";
         }
         first = false;
         prev_azimuth = azimuth;
         
         if (azimuth % 128 == 0) {
+            // Сектор
             out << std::fixed << std::setprecision(6) << time_sec << ","
-                << azimuth << ",0,SECTOR,0,0,0,0,0\n";
+                << azimuth << ",0,SECTOR,0,0,0,0,0,0\n";
         }
 
         // --- ГЕНЕРАЦИЯ ОТВЕТОВ ---
@@ -311,7 +313,22 @@ void generate_replies(const SystemConfig& config, double duration_seconds,
                     );
                     
                     auto reply = simulator.generate_rbs(azimuth, range_bins, rbs_code, spi_value);
+
+
+                    // Вероятность того, что ответ искажен (перекрыт)
+                    double garble_probability = 0.05;  // 5% ответов будут помечены как garble
+
+                    // При генерации RBS_A или RBS_C:
+                    bool is_garble = false;
+                    if (error_dist(rng) < garble_probability) {
+                        is_garble = true;
+                        // Для Mode C при garble часто is_valid становится false
+                        if (!is_mode_a) {
+                            is_valid = false;
+                        }
+                    }                    
                     
+                    // Записываем с добавленным полем is_garble
                     out << std::fixed << std::setprecision(6) << time_sec << ","
                         << azimuth << ","
                         << range_bins << ","
@@ -320,8 +337,10 @@ void generate_replies(const SystemConfig& config, double duration_seconds,
                         << decoded_altitude << ","
                         << (spi_value ? "1" : "0") << ","
                         << "0" << ","
-                        << (is_valid ? "1" : "0") << "\n";
-                    
+                        << (is_valid ? "1" : "0") << ","
+                        << (is_garble ? "1" : "0") << "\n";
+
+
                     reply_count++;
                     traj.mode_a_toggle = !traj.mode_a_toggle;
                 }

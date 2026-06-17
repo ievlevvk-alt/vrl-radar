@@ -15,7 +15,7 @@
 ./2_form_plots replies.txt plots.txt
 
 # 3. Трековая обработка
-./3_track_processing plots.txt tracks.txt
+./3_track_processing plots.txt tracks.txt 5.0 30.0 3 10
 
 # 4. Визуализация с разверткой (5 секунд на оборот)
 ./4_radar_player replies.txt plots.txt tracks.txt

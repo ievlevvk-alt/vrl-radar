@@ -19,6 +19,7 @@ struct Reply {
     bool spi;
     uint8_t sls_ratio;
     bool is_valid;
+    bool is_garble;      // Искажен/перекрыт
     double x;
     double y;
 };
@@ -36,6 +37,7 @@ struct Plot {
     int altitude_attempts;
     bool spi;
     int reply_count;
+    int garble_count;    // Количество искаженных ответов в плоте
     double azimuth_span_deg;
     double range_span_km;
     double first_reply_time;
@@ -68,7 +70,6 @@ public:
         check_completed_clusters();
         
         if (reply.type == "RBS_A") {
-            // Вычисляем координаты для RBS_A
             double az_rad = (reply.azimuth * azimuth_bin_deg_) * M_PI / 180.0;
             double range_m = reply.range * range_bin_m_;
             
@@ -92,7 +93,6 @@ public:
                 active_clusters_.push_back(new_cluster);
             }
         } else if (reply.type == "RBS_C") {
-            // Сохраняем Mode C ответы для поиска высоты
             mode_c_replies_.push_back(reply);
         }
         
@@ -133,8 +133,9 @@ private:
         double center_y{0};
         bool has_center{false};
         int last_azimuth{0};
-        uint32_t primary_code{0};  // Основной код (наиболее частый)
-        std::map<uint32_t, int> code_counts;  // Счетчики кодов
+        uint32_t primary_code{0};
+        std::map<uint32_t, int> code_counts;
+        int garble_count{0};
         
         void add_reply(const Reply& r) {
             if (replies.empty()) {
@@ -145,6 +146,8 @@ private:
                 primary_code = r.code_data;
             }
             replies.push_back(r);
+            if (r.is_garble) garble_count++;
+            
             last_time = r.time_sec;
             last_azimuth = r.azimuth;
             min_azimuth = std::min(min_azimuth, static_cast<double>(r.azimuth));
@@ -152,7 +155,6 @@ private:
             min_range = std::min(min_range, static_cast<double>(r.range));
             max_range = std::max(max_range, static_cast<double>(r.range));
             
-            // Обновляем счетчик кодов
             code_counts[r.code_data]++;
             if (code_counts[r.code_data] > code_counts[primary_code]) {
                 primary_code = r.code_data;
@@ -228,28 +230,27 @@ private:
         }
     }
     
-    // Поиск высоты для плота по Mode C ответам
     int find_altitude_for_plot(const Plot& plot) {
         int best_altitude = 0;
         int best_count = 0;
         std::map<int, int> altitude_counts;
         
         for (const auto& reply : mode_c_replies_) {
-            // Проверяем близость по времени (в пределах 0.5 секунды)
+            // Пропускаем искаженные ответы
+            if (reply.is_garble) continue;
+            
             double time_diff = std::abs(reply.time_sec - plot.time_sec);
             if (time_diff > 0.5) continue;
             
-            // Проверяем близость по азимуту (в пределах 5°)
             double az_diff = std::abs(reply.azimuth * azimuth_bin_deg_ - plot.azimuth_deg);
             az_diff = std::min(az_diff, 360.0 - az_diff);
             if (az_diff > 5.0) continue;
             
-            // Проверяем близость по дальности (в пределах 2 км)
             double range_km = reply.range * range_bin_m_ / 1000.0;
             double range_diff = std::abs(range_km - plot.range_km);
             if (range_diff > 2.0) continue;
             
-            // Если ответ валидный - учитываем
+            // is_valid может быть false при garble, но мы уже отфильтровали garble
             if (reply.is_valid && reply.altitude > 0) {
                 altitude_counts[reply.altitude]++;
                 if (altitude_counts[reply.altitude] > best_count) {
@@ -265,12 +266,9 @@ private:
     Plot create_plot(const Cluster& cluster) {
         Plot plot;
         plot.type = "RBS";
-        
-        // Используем наиболее частый код (primary_code)
         plot.code_data = cluster.primary_code;
         plot.reply_count = cluster.replies.size();
-        
-        // SPI берем из первого ответа (можно улучшить)
+        plot.garble_count = cluster.garble_count;
         plot.spi = cluster.replies[0].spi;
         plot.altitude = 0;
         plot.altitude_valid = false;
@@ -303,7 +301,7 @@ private:
         plot.x_km = plot.range_km * sin(az_rad);
         plot.y_km = plot.range_km * cos(az_rad);
         
-        // Ищем высоту
+        // Ищем высоту (игнорируем garble)
         int altitude = find_altitude_for_plot(plot);
         if (altitude > 0) {
             plot.altitude = altitude;
@@ -323,7 +321,7 @@ private:
     uint16_t current_azimuth_{0};
     
     std::vector<Cluster> active_clusters_;
-    std::vector<Reply> mode_c_replies_;  // Храним Mode C ответы
+    std::vector<Reply> mode_c_replies_;
     std::vector<Plot> completed_plots_;
 };
 
@@ -334,7 +332,7 @@ bool parse_reply_line(const std::string& line, Reply& reply) {
     while (std::getline(ss_line, part, ',')) {
         parts.push_back(part);
     }
-    if (parts.size() < 9) return false;
+    if (parts.size() < 10) return false;  // Теперь 10 полей
     
     try {
         reply.time_sec = std::stod(parts[0]);
@@ -352,6 +350,7 @@ bool parse_reply_line(const std::string& line, Reply& reply) {
         reply.spi = (parts[6] == "1");
         reply.sls_ratio = static_cast<uint8_t>(std::stoi(parts[7]));
         reply.is_valid = (parts[8] == "1");
+        reply.is_garble = (parts[9] == "1");
         return true;
     } catch (const std::exception&) {
         return false;
@@ -420,7 +419,7 @@ int main(int argc, char* argv[]) {
     
     std::ofstream out(output_file);
     out << "# Plots\n";
-    out << "# time_sec,azimuth_deg,range_km,x_km,y_km,type,code_data,altitude,altitude_valid,altitude_attempts,spi,reply_count,azimuth_span_deg,range_span_km,first_reply_time,last_reply_time\n";
+    out << "# time_sec,azimuth_deg,range_km,x_km,y_km,type,code_data,altitude,altitude_valid,altitude_attempts,spi,reply_count,garble_count,azimuth_span_deg,range_span_km,first_reply_time,last_reply_time\n";
     out << "# " << std::string(80, '-') << "\n";
     
     for (const auto& plot : all_plots) {
@@ -436,6 +435,7 @@ int main(int argc, char* argv[]) {
             << plot.altitude_attempts << ","
             << (plot.spi ? "1" : "0") << ","
             << plot.reply_count << ","
+            << plot.garble_count << ","
             << plot.azimuth_span_deg << ","
             << plot.range_span_km << ","
             << plot.first_reply_time << ","
