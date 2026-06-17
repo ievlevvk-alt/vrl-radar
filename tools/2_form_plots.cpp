@@ -9,216 +9,282 @@
 #include <algorithm>
 #include <set>
 
-// Структура для хранения ответа
 struct Reply {
     double time_sec;
     uint16_t azimuth;
     uint16_t range;
-    std::string type;        // "RBS_A", "RBS_C", "NORTH", "SECTOR"
+    std::string type;
     uint32_t code_data;
     int altitude;
     bool spi;
     uint8_t sls_ratio;
-    bool is_valid;           // Флаг валидности высоты
+    bool is_valid;
+    double x;
+    double y;
 };
 
-// Структура для хранения плота
 struct Plot {
-    double time_sec;              // Время формирования плота (середина)
-    double azimuth_deg;           // Средний азимут
-    double range_km;              // Средняя дальность
-    double x_km;                  // X координата
-    double y_km;                  // Y координата
-    std::string type;             // "RBS"
-    uint32_t code_data;           // Код цели
-    int altitude;                 // Высота (из Mode C)
-    bool altitude_valid;          // Флаг валидности высоты
-    int altitude_attempts;        // Количество попыток получить высоту
-    bool spi;                     // SPI
-    int reply_count;              // Количество ответов
-    double azimuth_span_deg;      // Разброс по азимуту
-    double range_span_km;         // Разброс по дальности
-    int sector_start;             // Начальный сектор
-    int sector_end;               // Конечный сектор
-    double first_reply_time;      // Время первого ответа
-    double last_reply_time;       // Время последнего ответа
-    uint16_t first_azimuth;       // Азимут первого ответа
-    uint16_t last_azimuth;        // Азимут последнего ответа
+    double time_sec;
+    double azimuth_deg;
+    double range_km;
+    double x_km;
+    double y_km;
+    std::string type;
+    uint32_t code_data;
+    int altitude;
+    bool altitude_valid;
+    int altitude_attempts;
+    bool spi;
+    int reply_count;
+    double azimuth_span_deg;
+    double range_span_km;
+    double first_reply_time;
+    double last_reply_time;
 };
 
-// Класс для формирования плотов по азимутальному положению луча
-class PlotFormer {
+class OnlineClusterer {
 public:
-    PlotFormer(int sectors_per_revolution = 32, double beamwidth_deg = 5.0) 
-        : sectors_per_revolution_(sectors_per_revolution)
-        , beamwidth_deg_(beamwidth_deg)
-        , beamwidth_bins_(static_cast<uint16_t>(beamwidth_deg / 0.08789)) {
+    OnlineClusterer(double range_bin_m = 30.0, double azimuth_bin_deg = 0.08789,
+                    double range_threshold_km = 1.5, double azimuth_threshold_deg = 3.0,
+                    double completion_azimuth_deg = 10.0)
+        : range_bin_m_(range_bin_m)
+        , azimuth_bin_deg_(azimuth_bin_deg)
+        , range_threshold_m_(range_threshold_km * 1000.0)
+        , azimuth_threshold_deg_(azimuth_threshold_deg)
+        , completion_azimuth_deg_(completion_azimuth_deg)
+        , current_azimuth_(0) {
         
-        std::cout << "Beamwidth: " << beamwidth_deg_ << "° (" << beamwidth_bins_ << " bins)\n";
+        std::cout << "Clustering: range_threshold=" << range_threshold_km << " km"
+                  << ", azimuth_threshold=" << azimuth_threshold_deg << "°"
+                  << ", completion_azimuth=" << completion_azimuth_deg << "°\n";
     }
     
-    // Обработка одного элемента
-    void process_item(const Reply& reply) {
-        // --- ОБРАБОТКА МАРКЕРОВ ---
-        if (reply.type == "NORTH") {
-            current_revolution_++;
-            check_azimuth_timeouts(reply.azimuth);
-            return;
-        }
-        
-        if (reply.type == "SECTOR") {
-            current_sector_ = reply.azimuth / (4096 / sectors_per_revolution_);
-            check_azimuth_timeouts(reply.azimuth);
-            return;
-        }
-        
-        // --- ОБРАБОТКА ОТВЕТОВ (только RBS_A) ---
-        if (reply.type != "RBS_A") return;
-        
-        uint32_t code = reply.code_data;
-        
-        if (pending_plots_.find(code) == pending_plots_.end()) {
-            pending_plots_[code] = PendingPlot();
-            pending_plots_[code].first_seen_time = reply.time_sec;
-            pending_plots_[code].first_seen_azimuth = reply.azimuth;
-        }
-        
-        auto& pending = pending_plots_[code];
-        pending.replies.push_back(reply);
-        pending.last_update_time = reply.time_sec;
-        pending.last_update_azimuth = reply.azimuth;
-        pending.sectors_covered.insert(current_sector_);
-        pending.reply_count++;
-        
-        check_plot_completion(code);
+    void update_azimuth(uint16_t azimuth) {
+        current_azimuth_ = azimuth;
+        check_completed_clusters();
     }
     
-    // Проверка завершения плотов по азимуту
-    void check_azimuth_timeouts(uint16_t current_azimuth) {
-        std::vector<uint32_t> to_finish;
+    void add_reply(const Reply& reply) {
+        check_completed_clusters();
         
-        for (const auto& [code, pending] : pending_plots_) {
-            if (pending.replies.empty()) continue;
+        if (reply.type == "RBS_A") {
+            // Вычисляем координаты для RBS_A
+            double az_rad = (reply.azimuth * azimuth_bin_deg_) * M_PI / 180.0;
+            double range_m = reply.range * range_bin_m_;
             
-            uint16_t last_az = pending.last_update_azimuth;
-            int16_t az_diff = static_cast<int16_t>(current_azimuth - last_az);
+            Reply r = reply;
+            r.x = range_m * sin(az_rad);
+            r.y = range_m * cos(az_rad);
             
-            if (az_diff < 0) az_diff += 4096;
-            
-            if (az_diff > beamwidth_bins_ * 2) {
-                to_finish.push_back(code);
+            bool added = false;
+            for (auto& cluster : active_clusters_) {
+                if (cluster.is_near(r, range_threshold_m_, azimuth_threshold_deg_,
+                                    range_bin_m_, azimuth_bin_deg_)) {
+                    cluster.add_reply(r);
+                    added = true;
+                    break;
+                }
             }
+            
+            if (!added) {
+                Cluster new_cluster;
+                new_cluster.add_reply(r);
+                active_clusters_.push_back(new_cluster);
+            }
+        } else if (reply.type == "RBS_C") {
+            // Сохраняем Mode C ответы для поиска высоты
+            mode_c_replies_.push_back(reply);
         }
         
-        for (uint32_t code : to_finish) {
-            finish_plot(code);
-        }
+        current_azimuth_ = reply.azimuth;
     }
     
-    // Проверка конкретного плота на завершение
-    void check_plot_completion(uint32_t code) {
-        auto it = pending_plots_.find(code);
-        if (it == pending_plots_.end()) return;
-        
-        auto& pending = it->second;
-        if (pending.replies.size() < 2) return;
-        
-        uint16_t min_az = 4096, max_az = 0;
-        for (const auto& reply : pending.replies) {
-            min_az = std::min(min_az, reply.azimuth);
-            max_az = std::max(max_az, reply.azimuth);
-        }
-        
-        int16_t span = static_cast<int16_t>(max_az - min_az);
-        if (span < 0) span += 4096;
-        
-        if (span > beamwidth_bins_ * 3) {
-            finish_plot(code);
-        }
+    void process_sector(uint16_t azimuth) {
+        current_azimuth_ = azimuth;
+        check_completed_clusters();
     }
     
-    // Завершить плот
-    void finish_plot(uint32_t code) {
-        auto it = pending_plots_.find(code);
-        if (it == pending_plots_.end() || it->second.replies.empty()) return;
-        
-        auto& pending = it->second;
-        
-        if (pending.replies.size() >= 2) {
-            Plot plot = create_plot(pending.replies);
-            completed_plots_.push_back(plot);
-        }
-        
-        pending_plots_.erase(it);
-    }
-    
-    // Принудительно завершить все плоты
-    void finish_all() {
-        auto codes = std::vector<uint32_t>();
-        for (const auto& [code, _] : pending_plots_) {
-            codes.push_back(code);
-        }
-        for (uint32_t code : codes) {
-            finish_plot(code);
-        }
-    }
-    
-    // Получить завершенные плоты
     std::vector<Plot> get_completed_plots() {
         auto result = std::move(completed_plots_);
         completed_plots_.clear();
         return result;
     }
     
+    void finish_all() {
+        for (auto& cluster : active_clusters_) {
+            if (cluster.replies.size() >= 2) {
+                completed_plots_.push_back(create_plot(cluster));
+            }
+        }
+        active_clusters_.clear();
+        mode_c_replies_.clear();
+    }
+    
 private:
-    struct PendingPlot {
+    struct Cluster {
         std::vector<Reply> replies;
-        double first_seen_time{0.0};
-        double last_update_time{0.0};
-        uint16_t first_seen_azimuth{0};
-        uint16_t last_update_azimuth{0};
-        std::set<int> sectors_covered;
-        int reply_count{0};
+        double min_azimuth{4096};
+        double max_azimuth{0};
+        double min_range{1e9};
+        double max_range{0};
+        double first_time{0};
+        double last_time{0};
+        double center_x{0};
+        double center_y{0};
+        bool has_center{false};
+        int last_azimuth{0};
+        uint32_t primary_code{0};  // Основной код (наиболее частый)
+        std::map<uint32_t, int> code_counts;  // Счетчики кодов
+        
+        void add_reply(const Reply& r) {
+            if (replies.empty()) {
+                first_time = r.time_sec;
+                center_x = r.x;
+                center_y = r.y;
+                has_center = true;
+                primary_code = r.code_data;
+            }
+            replies.push_back(r);
+            last_time = r.time_sec;
+            last_azimuth = r.azimuth;
+            min_azimuth = std::min(min_azimuth, static_cast<double>(r.azimuth));
+            max_azimuth = std::max(max_azimuth, static_cast<double>(r.azimuth));
+            min_range = std::min(min_range, static_cast<double>(r.range));
+            max_range = std::max(max_range, static_cast<double>(r.range));
+            
+            // Обновляем счетчик кодов
+            code_counts[r.code_data]++;
+            if (code_counts[r.code_data] > code_counts[primary_code]) {
+                primary_code = r.code_data;
+            }
+            
+            if (has_center) {
+                double alpha = 1.0 / replies.size();
+                center_x = center_x * (1 - alpha) + r.x * alpha;
+                center_y = center_y * (1 - alpha) + r.y * alpha;
+            }
+        }
+        
+        bool is_near(const Reply& r, double range_threshold_m, double azimuth_threshold_deg,
+                     double range_bin_m, double azimuth_bin_deg) const {
+            if (replies.empty()) return true;
+            
+            if (has_center) {
+                double dx = r.x - center_x;
+                double dy = r.y - center_y;
+                double dist = sqrt(dx*dx + dy*dy);
+                if (dist < range_threshold_m * 0.5) {
+                    return true;
+                }
+            }
+            
+            for (const auto& existing : replies) {
+                double az_diff = std::abs(static_cast<double>(r.azimuth) - existing.azimuth);
+                az_diff = std::min(az_diff, 4096.0 - az_diff);
+                double az_deg = az_diff * azimuth_bin_deg;
+                
+                double range_diff = std::abs(static_cast<double>(r.range) - existing.range);
+                double range_m = range_diff * range_bin_m;
+                
+                if (az_deg < azimuth_threshold_deg && range_m < range_threshold_m) {
+                    return true;
+                }
+            }
+            
+            return false;
+        }
+        
+        bool is_completed(uint16_t current_azimuth, double azimuth_bin_deg, 
+                          double completion_azimuth_deg) const {
+            if (replies.empty()) return false;
+            
+            int16_t az_diff = static_cast<int16_t>(current_azimuth - last_azimuth);
+            if (az_diff < 0) az_diff += 4096;
+            double az_deg = az_diff * azimuth_bin_deg;
+            
+            return az_deg > completion_azimuth_deg;
+        }
     };
     
-    // Создание плота из накопленных ответов
-    Plot create_plot(const std::vector<Reply>& replies) {
+    void check_completed_clusters() {
+        std::vector<int> to_remove;
+        
+        for (size_t i = 0; i < active_clusters_.size(); ++i) {
+            auto& cluster = active_clusters_[i];
+            if (cluster.replies.empty()) continue;
+            
+            if (cluster.is_completed(current_azimuth_, azimuth_bin_deg_, 
+                                     completion_azimuth_deg_)) {
+                if (cluster.replies.size() >= 2) {
+                    completed_plots_.push_back(create_plot(cluster));
+                }
+                to_remove.push_back(i);
+            }
+        }
+        
+        for (int i = static_cast<int>(to_remove.size()) - 1; i >= 0; --i) {
+            int idx = to_remove[i];
+            active_clusters_.erase(active_clusters_.begin() + idx);
+        }
+    }
+    
+    // Поиск высоты для плота по Mode C ответам
+    int find_altitude_for_plot(const Plot& plot) {
+        int best_altitude = 0;
+        int best_count = 0;
+        std::map<int, int> altitude_counts;
+        
+        for (const auto& reply : mode_c_replies_) {
+            // Проверяем близость по времени (в пределах 0.5 секунды)
+            double time_diff = std::abs(reply.time_sec - plot.time_sec);
+            if (time_diff > 0.5) continue;
+            
+            // Проверяем близость по азимуту (в пределах 5°)
+            double az_diff = std::abs(reply.azimuth * azimuth_bin_deg_ - plot.azimuth_deg);
+            az_diff = std::min(az_diff, 360.0 - az_diff);
+            if (az_diff > 5.0) continue;
+            
+            // Проверяем близость по дальности (в пределах 2 км)
+            double range_km = reply.range * range_bin_m_ / 1000.0;
+            double range_diff = std::abs(range_km - plot.range_km);
+            if (range_diff > 2.0) continue;
+            
+            // Если ответ валидный - учитываем
+            if (reply.is_valid && reply.altitude > 0) {
+                altitude_counts[reply.altitude]++;
+                if (altitude_counts[reply.altitude] > best_count) {
+                    best_count = altitude_counts[reply.altitude];
+                    best_altitude = reply.altitude;
+                }
+            }
+        }
+        
+        return best_altitude;
+    }
+    
+    Plot create_plot(const Cluster& cluster) {
         Plot plot;
         plot.type = "RBS";
-        plot.code_data = replies[0].code_data;
-        plot.reply_count = replies.size();
-        plot.spi = replies[0].spi;
+        
+        // Используем наиболее частый код (primary_code)
+        plot.code_data = cluster.primary_code;
+        plot.reply_count = cluster.replies.size();
+        
+        // SPI берем из первого ответа (можно улучшить)
+        plot.spi = cluster.replies[0].spi;
         plot.altitude = 0;
         plot.altitude_valid = false;
         plot.altitude_attempts = 0;
         
-        int min_sector = 999, max_sector = -1;
-        uint16_t min_az = 4096, max_az = 0;
-        
-        for (const auto& r : replies) {
-            int sector = r.azimuth / (4096 / sectors_per_revolution_);
-            min_sector = std::min(min_sector, sector);
-            max_sector = std::max(max_sector, sector);
-            min_az = std::min(min_az, r.azimuth);
-            max_az = std::max(max_az, r.azimuth);
-        }
-        plot.sector_start = min_sector;
-        plot.sector_end = max_sector;
-        plot.first_azimuth = min_az;
-        plot.last_azimuth = max_az;
-        
         double sum_az = 0.0;
         double sum_range = 0.0;
-        double min_range = 1e9, max_range = 0;
-        double first_time = replies[0].time_sec;
-        double last_time = replies[0].time_sec;
+        double first_time = cluster.replies[0].time_sec;
+        double last_time = cluster.replies[0].time_sec;
         
-        for (const auto& reply : replies) {
-            double az_deg = reply.azimuth * 360.0 / 4096.0;
+        for (const auto& reply : cluster.replies) {
+            double az_deg = reply.azimuth * azimuth_bin_deg_;
             sum_az += az_deg;
             sum_range += reply.range;
-            min_range = std::min(min_range, static_cast<double>(reply.range));
-            max_range = std::max(max_range, static_cast<double>(reply.range));
             first_time = std::min(first_time, reply.time_sec);
             last_time = std::max(last_time, reply.time_sec);
         }
@@ -227,158 +293,134 @@ private:
         plot.first_reply_time = first_time;
         plot.last_reply_time = last_time;
         
-        plot.azimuth_deg = sum_az / replies.size();
-        if (plot.azimuth_deg < 0) plot.azimuth_deg += 360.0;
+        plot.azimuth_deg = sum_az / cluster.replies.size();
+        plot.range_km = (sum_range / cluster.replies.size()) * range_bin_m_ / 1000.0;
         
-        plot.range_km = (sum_range / replies.size()) * 0.03;
-        
-        int16_t az_span = static_cast<int16_t>(max_az - min_az);
-        if (az_span < 0) az_span += 4096;
-        plot.azimuth_span_deg = az_span * 360.0 / 4096.0;
-        plot.range_span_km = (max_range - min_range) * 0.03;
+        plot.azimuth_span_deg = (cluster.max_azimuth - cluster.min_azimuth) * azimuth_bin_deg_;
+        plot.range_span_km = (cluster.max_range - cluster.min_range) * range_bin_m_ / 1000.0;
         
         double az_rad = plot.azimuth_deg * M_PI / 180.0;
-        plot.x_km = plot.range_km * std::sin(az_rad);
-        plot.y_km = plot.range_km * std::cos(az_rad);
+        plot.x_km = plot.range_km * sin(az_rad);
+        plot.y_km = plot.range_km * cos(az_rad);
         
-        // Ищем высоту из Mode C ответов
-        double time_window = 0.1;
-        int valid_altitude_count = 0;
-        int invalid_altitude_count = 0;
-        double altitude_sum = 0.0;
-        
-        for (const auto& reply : replies) {
-            if (reply.type == "RBS_C") {
-                double az_diff = std::abs(reply.azimuth * 360.0 / 4096.0 - plot.azimuth_deg);
-                az_diff = std::min(az_diff, 360.0 - az_diff);
-                double range_diff = std::abs(reply.range * 0.03 - plot.range_km);
-                
-                if (az_diff < 2.0 && range_diff < 1.0) {
-                    if (reply.is_valid) {
-                        valid_altitude_count++;
-                        altitude_sum += reply.altitude;
-                    } else {
-                        invalid_altitude_count++;
-                    }
-                }
-            }
-        }
-        
-        plot.altitude_attempts = valid_altitude_count + invalid_altitude_count;
-        
-        if (valid_altitude_count > 0) {
-            plot.altitude = static_cast<int>(altitude_sum / valid_altitude_count);
+        // Ищем высоту
+        int altitude = find_altitude_for_plot(plot);
+        if (altitude > 0) {
+            plot.altitude = altitude;
             plot.altitude_valid = true;
-        } else if (invalid_altitude_count > 0) {
-            plot.altitude = 0;
-            plot.altitude_valid = false;
-        } else {
-            plot.altitude = 0;
-            plot.altitude_valid = false;
+            plot.altitude_attempts = 1;
         }
         
         return plot;
     }
     
-    int sectors_per_revolution_;
-    double beamwidth_deg_;
-    uint16_t beamwidth_bins_;
-    int current_sector_{-1};
-    int current_revolution_{0};
+    double range_bin_m_;
+    double azimuth_bin_deg_;
+    double range_threshold_m_;
+    double azimuth_threshold_deg_;
+    double completion_azimuth_deg_;
     
-    std::map<uint32_t, PendingPlot> pending_plots_;
+    uint16_t current_azimuth_{0};
+    
+    std::vector<Cluster> active_clusters_;
+    std::vector<Reply> mode_c_replies_;  // Храним Mode C ответы
     std::vector<Plot> completed_plots_;
 };
+
+bool parse_reply_line(const std::string& line, Reply& reply) {
+    std::vector<std::string> parts;
+    std::stringstream ss_line(line);
+    std::string part;
+    while (std::getline(ss_line, part, ',')) {
+        parts.push_back(part);
+    }
+    if (parts.size() < 9) return false;
+    
+    try {
+        reply.time_sec = std::stod(parts[0]);
+        reply.azimuth = static_cast<uint16_t>(std::stoi(parts[1]));
+        reply.range = static_cast<uint16_t>(std::stoi(parts[2]));
+        reply.type = parts[3];
+        
+        if (!parts[4].empty() && parts[4][0] == '0') {
+            reply.code_data = static_cast<uint32_t>(std::stoi(parts[4], nullptr, 8));
+        } else {
+            reply.code_data = static_cast<uint32_t>(std::stoi(parts[4]));
+        }
+        
+        reply.altitude = std::stoi(parts[5]);
+        reply.spi = (parts[6] == "1");
+        reply.sls_ratio = static_cast<uint8_t>(std::stoi(parts[7]));
+        reply.is_valid = (parts[8] == "1");
+        return true;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
 
 int main(int argc, char* argv[]) {
     std::string input_file = "replies.txt";
     std::string output_file = "plots.txt";
-    double beamwidth_deg = 5.0;
+    double range_threshold_km = 1.5;
+    double azimuth_threshold_deg = 3.0;
+    double completion_azimuth_deg = 10.0;
     
     if (argc > 1) input_file = argv[1];
     if (argc > 2) output_file = argv[2];
-    if (argc > 3) beamwidth_deg = std::stod(argv[3]);
+    if (argc > 3) range_threshold_km = std::stod(argv[3]);
+    if (argc > 4) azimuth_threshold_deg = std::stod(argv[4]);
+    if (argc > 5) completion_azimuth_deg = std::stod(argv[5]);
     
-    std::cout << "=== Step 2: Form Plots ===\n";
+    std::cout << "=== Step 2: Form Plots (Online Clustering) ===\n";
     std::cout << "Input: " << input_file << "\n";
     std::cout << "Output: " << output_file << "\n";
-    std::cout << "Beamwidth: " << beamwidth_deg << "°\n\n";
+    std::cout << "Range threshold: " << range_threshold_km << " km\n";
+    std::cout << "Azimuth threshold: " << azimuth_threshold_deg << "°\n";
+    std::cout << "Completion azimuth: " << completion_azimuth_deg << "°\n\n";
     
-    // Читаем все элементы
     std::ifstream in(input_file);
-    std::vector<Reply> items;
+    OnlineClusterer clusterer(30.0, 0.08789, range_threshold_km, azimuth_threshold_deg,
+                              completion_azimuth_deg);
     std::string line;
-    
-    while (std::getline(in, line)) {
-        if (line.empty() || line[0] == '#') continue;
-        
-        std::stringstream ss(line);
-        Reply reply;
-        std::string spi_str;
-        int sls;
-        int is_valid;
-        
-        ss >> reply.time_sec;
-        ss.ignore(1, ',');
-        ss >> reply.azimuth;
-        ss.ignore(1, ',');
-        ss >> reply.range;
-        ss.ignore(1, ',');
-        ss >> reply.type;
-        ss.ignore(1, ',');
-        ss >> reply.code_data;
-        ss.ignore(1, ',');
-        ss >> reply.altitude;
-        ss.ignore(1, ',');
-        ss >> spi_str;
-        reply.spi = (spi_str == "1");
-        ss.ignore(1, ',');
-        ss >> sls;
-        reply.sls_ratio = static_cast<uint8_t>(sls);
-        ss.ignore(1, ',');
-        ss >> is_valid;
-        reply.is_valid = (is_valid == 1);
-        
-        if (ss.fail()) {
-            reply.is_valid = true;
-            ss.clear();
-        }
-        
-        items.push_back(reply);
-    }
-    in.close();
-    
-    std::cout << "Read " << items.size() << " items\n";
-    
-    int rbs_a = 0, rbs_c = 0, north = 0, sector = 0;
-    for (const auto& r : items) {
-        if (r.type == "RBS_A") rbs_a++;
-        else if (r.type == "RBS_C") rbs_c++;
-        else if (r.type == "NORTH") north++;
-        else if (r.type == "SECTOR") sector++;
-    }
-    std::cout << "  RBS_A: " << rbs_a << ", RBS_C: " << rbs_c << "\n";
-    std::cout << "  NORTH: " << north << ", SECTOR: " << sector << "\n\n";
-    
-    // Формируем плоты
-    PlotFormer plot_former(32, beamwidth_deg);
+    int line_num = 0;
+    int replies_processed = 0;
     std::vector<Plot> all_plots;
     
-    for (const auto& item : items) {
-        plot_former.process_item(item);
+    while (std::getline(in, line)) {
+        line_num++;
+        if (line_num % 1000 == 0) {
+            std::cout << "\rProcessing line " << line_num << "..." << std::flush;
+        }
         
-        auto plots = plot_former.get_completed_plots();
-        all_plots.insert(all_plots.end(), plots.begin(), plots.end());
+        if (line.empty() || line[0] == '#') continue;
+        
+        Reply reply;
+        if (!parse_reply_line(line, reply)) continue;
+        
+        if (reply.type == "SECTOR") {
+            clusterer.process_sector(reply.azimuth);
+            auto plots = clusterer.get_completed_plots();
+            all_plots.insert(all_plots.end(), plots.begin(), plots.end());
+        } else if (reply.type == "RBS_A" || reply.type == "RBS_C") {
+            clusterer.add_reply(reply);
+            replies_processed++;
+            
+            auto plots = clusterer.get_completed_plots();
+            all_plots.insert(all_plots.end(), plots.begin(), plots.end());
+        }
     }
     
-    plot_former.finish_all();
-    auto final_plots = plot_former.get_completed_plots();
+    std::cout << "\nFinishing remaining clusters...\n";
+    clusterer.finish_all();
+    auto final_plots = clusterer.get_completed_plots();
     all_plots.insert(all_plots.end(), final_plots.begin(), final_plots.end());
     
-    // Записываем плоты
+    std::cout << "Processed " << replies_processed << " replies (RBS_A + RBS_C)\n";
+    std::cout << "Generated " << all_plots.size() << " plots\n";
+    
     std::ofstream out(output_file);
     out << "# Plots\n";
-    out << "# time_sec,azimuth_deg,range_km,x_km,y_km,type,code_data,altitude,altitude_valid,altitude_attempts,spi,reply_count,azimuth_span_deg,range_span_km,sector_start,sector_end,first_reply_time,last_reply_time\n";
+    out << "# time_sec,azimuth_deg,range_km,x_km,y_km,type,code_data,altitude,altitude_valid,altitude_attempts,spi,reply_count,azimuth_span_deg,range_span_km,first_reply_time,last_reply_time\n";
     out << "# " << std::string(80, '-') << "\n";
     
     for (const auto& plot : all_plots) {
@@ -388,7 +430,7 @@ int main(int argc, char* argv[]) {
             << plot.x_km << ","
             << plot.y_km << ","
             << plot.type << ","
-            << plot.code_data << ","
+            << std::oct << plot.code_data << std::dec << ","
             << plot.altitude << ","
             << (plot.altitude_valid ? "1" : "0") << ","
             << plot.altitude_attempts << ","
@@ -396,13 +438,10 @@ int main(int argc, char* argv[]) {
             << plot.reply_count << ","
             << plot.azimuth_span_deg << ","
             << plot.range_span_km << ","
-            << plot.sector_start << ","
-            << plot.sector_end << ","
             << plot.first_reply_time << ","
             << plot.last_reply_time << "\n";
     }
     out.close();
     
-    std::cout << "Generated " << all_plots.size() << " plots\n";
     return 0;
 }
