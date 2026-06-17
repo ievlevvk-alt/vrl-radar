@@ -62,6 +62,7 @@ struct TrackData {
     int state;
     int garble_count;
     int reply_count;
+    std::string type;  // "RBS" или "UVD"
 };
 
 struct TrackLabel {
@@ -72,6 +73,7 @@ struct TrackLabel {
     int hit_count;
     double speed;
     double course;
+    std::string type;
 };
 
 // ============================================================================
@@ -125,7 +127,15 @@ bool parse_plot_line(const std::string& line, PlotData& plot) {
         plot.x_km = std::stod(parts[3]);
         plot.y_km = std::stod(parts[4]);
         plot.type = parts[5];
-        plot.code_data = static_cast<uint32_t>(std::stoi(parts[6], nullptr, 8));
+        
+        // Определяем систему счисления для кода
+        std::string code_str = parts[6];
+        if (plot.type == "RBS" || plot.type == "RBS_A" || plot.type == "RBS_C") {
+            plot.code_data = static_cast<uint32_t>(std::stoi(code_str, nullptr, 8));
+        } else {
+            plot.code_data = static_cast<uint32_t>(std::stoul(code_str));
+        }
+        
         plot.altitude = std::stoi(parts[7]);
         plot.altitude_valid = (parts[8] == "1");
         plot.altitude_attempts = std::stoi(parts[9]);
@@ -149,7 +159,7 @@ bool parse_track_line(const std::string& line, TrackData& track) {
     while (std::getline(ss_line, part, ',')) {
         parts.push_back(part);
     }
-    if (parts.size() < 14) return false;
+    if (parts.size() < 13) return false;
     
     try {
         track.time_sec = std::stod(parts[0]);
@@ -158,14 +168,21 @@ bool parse_track_line(const std::string& line, TrackData& track) {
         track.y_km = std::stod(parts[3]);
         track.speed_km_s = std::stod(parts[4]);
         track.course_deg = std::stod(parts[5]);
-        track.code_data = static_cast<uint32_t>(std::stoi(parts[6], nullptr, 8));
+        
+        std::string code_str = parts[6];
+        track.type = parts[12];  // "RBS" или "UVD"
+        
+        if (track.type == "RBS") {
+            track.code_data = static_cast<uint32_t>(std::stoi(code_str, nullptr, 8));
+        } else {
+            track.code_data = static_cast<uint32_t>(std::stoul(code_str));
+        }
+        
         track.altitude = std::stoi(parts[7]);
         track.altitude_valid = (parts[8] == "1");
         track.confidence = std::stod(parts[9]);
         track.hit_count = std::stoi(parts[10]);
         track.state = std::stoi(parts[11]);
-        track.garble_count = std::stoi(parts[12]);
-        track.reply_count = std::stoi(parts[13]);
         return true;
     } catch (const std::exception&) {
         return false;
@@ -341,7 +358,14 @@ private:
             if (!is_visible_by_beam(reply.time_sec, az_deg)) continue;
             if (reply.is_garble) continue;
             
-            double range_m = reply.range * 30.0;
+            // Правильный масштаб дальности
+            double range_bin_m;
+            if (reply.type == "RBS_A" || reply.type == "RBS_C") {
+                range_bin_m = 30.0;
+            } else {
+                range_bin_m = 60.0;
+            }
+            double range_m = reply.range * range_bin_m;
             if (range_m > current_range_m) continue;
             
             double rad = reply.azimuth * (360.0 / 4096.0) * M_PI / 180.0;
@@ -349,7 +373,7 @@ private:
             int y = center_y_ - static_cast<int>(range_m * scale_ * cos(rad));
             
             if (x >= 0 && x < width_ && y >= 0 && y < height_) {
-                if (reply.type == "RBS_A") {
+                if (reply.type == "RBS_A" || reply.type == "RBS_C") {
                     SDL_SetRenderDrawColor(renderer_, 100, 100, 255, 200);
                 } else {
                     SDL_SetRenderDrawColor(renderer_, 255, 100, 100, 200);
@@ -379,10 +403,18 @@ private:
                 double garble_ratio = (plot.reply_count > 0) ? 
                     static_cast<double>(plot.garble_count) / plot.reply_count : 0.0;
                 
-                if (garble_ratio > 0.2) {
-                    SDL_SetRenderDrawColor(renderer_, 255, 165, 0, 255);
+                if (plot.type == "RBS" || plot.type == "RBS_A" || plot.type == "RBS_C") {
+                    if (garble_ratio > 0.2) {
+                        SDL_SetRenderDrawColor(renderer_, 255, 165, 0, 255);
+                    } else {
+                        SDL_SetRenderDrawColor(renderer_, 255, 255, 0, 255);
+                    }
                 } else {
-                    SDL_SetRenderDrawColor(renderer_, 255, 255, 0, 255);
+                    if (garble_ratio > 0.2) {
+                        SDL_SetRenderDrawColor(renderer_, 255, 100, 255, 255);
+                    } else {
+                        SDL_SetRenderDrawColor(renderer_, 0, 255, 255, 255);
+                    }
                 }
                 draw_circle(x, y, radius, false);
                 draw_circle(x, y, radius - 2, true);
@@ -414,7 +446,14 @@ private:
                 }
             }
             
-            SDL_SetRenderDrawColor(renderer_, 0, 100, 0, 80);
+            // Разные цвета для разных типов треков
+            std::string first_type = history[0].type;
+            if (first_type == "RBS") {
+                SDL_SetRenderDrawColor(renderer_, 0, 100, 0, 80);
+            } else {
+                SDL_SetRenderDrawColor(renderer_, 0, 0, 100, 80);
+            }
+            
             for (size_t i = 1; i < screen_points.size(); ++i) {
                 SDL_RenderDrawLine(renderer_, 
                     screen_points[i-1].first, screen_points[i-1].second,
@@ -426,7 +465,18 @@ private:
     void draw_track_label(int x, int y, const TrackLabel& label) {
         if (!font_) return;
         
-        // speed в км/с → км/ч (умножаем на 3600)
+        // Форматирование кода
+        std::string code_str;
+        if (label.type == "RBS") {
+            std::stringstream ss;
+            ss << std::oct << std::stoul(label.code);
+            code_str = ss.str();
+            while (code_str.length() < 4) code_str = "0" + code_str;
+            code_str = "0" + code_str;
+        } else {
+            code_str = label.code;
+        }
+        
         double speed_kmh = label.speed * 3600.0;
         
         char text[256];
@@ -438,7 +488,7 @@ private:
                  "Course: %.1f°\n"
                  "Conf: %.0f%% Hits: %d",
                  label.track_id,
-                 label.code.c_str(),
+                 code_str.c_str(),
                  label.altitude,
                  speed_kmh,
                  label.course,
@@ -457,8 +507,11 @@ private:
         std::vector<SDL_Surface*> surfaces;
         std::vector<SDL_Texture*> textures;
         
+        SDL_Color color = (label.type == "RBS") ? 
+            SDL_Color{0, 255, 0, 255} : SDL_Color{0, 255, 255, 255};
+        
         for (const auto& l : lines) {
-            SDL_Surface* surface = TTF_RenderText_Solid(font_, l.c_str(), {0, 255, 0, 255});
+            SDL_Surface* surface = TTF_RenderText_Solid(font_, l.c_str(), color);
             if (surface) {
                 max_width = std::max(max_width, surface->w);
                 surfaces.push_back(surface);
@@ -482,11 +535,14 @@ private:
             label_y = height_ - total_height - 10;
         }
         
-        SDL_SetRenderDrawColor(renderer_, 0, 40, 0, 200);
+        SDL_Color bg_color = (label.type == "RBS") ?
+            SDL_Color{0, 40, 0, 200} : SDL_Color{0, 0, 40, 200};
+        
+        SDL_SetRenderDrawColor(renderer_, bg_color.r, bg_color.g, bg_color.b, bg_color.a);
         SDL_Rect bg_rect = {label_x - padding, label_y - padding, 
                             max_width + padding * 2, total_height};
         SDL_RenderFillRect(renderer_, &bg_rect);
-        SDL_SetRenderDrawColor(renderer_, 0, 255, 0, 100);
+        SDL_SetRenderDrawColor(renderer_, color.r, color.g, color.b, 100);
         SDL_RenderDrawRect(renderer_, &bg_rect);
         
         for (size_t i = 0; i < surfaces.size(); ++i) {
@@ -524,9 +580,20 @@ private:
             
             if (x >= 0 && x < width_ && y >= 0 && y < height_) {
                 int green = static_cast<int>(latest->confidence * 255);
-                SDL_SetRenderDrawColor(renderer_, 0, green, 0, 255);
+                
+                // Разные цвета для RBS и UVD
+                if (latest->type == "RBS") {
+                    SDL_SetRenderDrawColor(renderer_, 0, green, 0, 255);
+                } else {
+                    SDL_SetRenderDrawColor(renderer_, 0, green, green, 255);
+                }
                 draw_circle(x, y, 12, false);
-                SDL_SetRenderDrawColor(renderer_, 0, green, 0, 200);
+                
+                if (latest->type == "RBS") {
+                    SDL_SetRenderDrawColor(renderer_, 0, green, 0, 200);
+                } else {
+                    SDL_SetRenderDrawColor(renderer_, 0, green, green, 200);
+                }
                 draw_circle(x, y, 5, true);
                 
                 double speed = (latest->speed_km_s > 0.01) ? latest->speed_km_s : 0.0;
@@ -536,28 +603,24 @@ private:
                     int x2 = x + static_cast<int>(speed_pixels * sin(course_rad));
                     int y2 = y - static_cast<int>(speed_pixels * cos(course_rad));
                     
-                    SDL_SetRenderDrawColor(renderer_, 0, 255, 0, 255);
+                    if (latest->type == "RBS") {
+                        SDL_SetRenderDrawColor(renderer_, 0, 255, 0, 255);
+                    } else {
+                        SDL_SetRenderDrawColor(renderer_, 0, 255, 255, 255);
+                    }
                     SDL_RenderDrawLine(renderer_, x, y, x2, y2);
                     draw_arrow(x, y, x2, y2);
                 }
                 
                 TrackLabel label;
                 label.track_id = latest->track_id;
-                
-                std::stringstream code_ss;
-                code_ss << std::oct << latest->code_data;
-                std::string code_str = code_ss.str();
-                while (code_str.length() < 4) {
-                    code_str = "0" + code_str;
-                }
-                code_str = "0" + code_str;
-                label.code = code_str;
-                
+                label.code = std::to_string(latest->code_data);
                 label.altitude = latest->altitude;
                 label.confidence = latest->confidence;
                 label.hit_count = latest->hit_count;
                 label.speed = latest->speed_km_s;
                 label.course = latest->course_deg;
+                label.type = latest->type;
                 
                 draw_track_label(x, y, label);
             }
