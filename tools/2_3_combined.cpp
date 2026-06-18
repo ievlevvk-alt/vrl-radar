@@ -1,6 +1,7 @@
 // tools/2_3_combined.cpp
 #include "vrl/radar/processing/tracker.h"
 #include "vrl/radar/core/config.h"
+#include "vrl/radar/utils/logger.h"
 #include <iostream>
 #include <fstream>
 #include <vector>
@@ -12,6 +13,7 @@
 #include <set>
 
 using namespace vrl::radar;
+using namespace vrl::radar::utils;
 
 // Константы для преобразования
 constexpr double AZIMUTH_BIN_DEG = 360.0 / 4096.0;
@@ -560,54 +562,6 @@ void process_plot_in_tracker(const PlotData& plot,
         } else {
             std::cout << "[TRACKER] SKIPPING (already written)" << std::endl;
         }
-
-#if 0
-        if (it == last_hit.end() || it->second != track.hit_count) {
-            
-            double speed_km_s = track.ground_speed / 1000.0;
-            double course_deg = track.course_deg;
-            
-            if (speed_km_s < 0.001) {
-                auto prev = prev_plot.find(track.id);
-                if (prev != prev_plot.end()) {
-                    double dt = plot.time_sec - prev->second.time_sec;
-                    if (dt > 0.1) {
-                        double dx = plot.x_km - prev->second.x_km;
-                        double dy = plot.y_km - prev->second.y_km;
-                        double dist = sqrt(dx*dx + dy*dy);
-                        speed_km_s = dist / dt;
-                        course_deg = atan2(dx, dy) * 180.0 / M_PI;
-                        if (course_deg < 0) course_deg += 360.0;
-                    }
-                }
-                prev_plot[track.id] = plot;
-            }
-            
-            uint64_t display_id = track.id + id_offset;
-            
-            uint32_t code = (type == "RBS") ? track.mode3a_code : track.uvd_data20;
-            
-
-            out_tracks << std::fixed << std::setprecision(3) << plot.time_sec << ","
-                    << display_id << ","
-                    << std::setprecision(2) << track.x / 1000.0 << ","
-                    << track.y / 1000.0 << ","
-                    << std::setprecision(3) << speed_km_s << ","
-                    << std::setprecision(1) << course_deg << ","
-                    << format_code(code, type) << ","
-                    << track.altitude << ","
-                    << (track.altitude > 0 ? "1" : "0") << ","
-                    << std::setprecision(2) << track.confidence << ","
-                    << track.hit_count << ","
-                    << static_cast<int>(track.state) << ","
-                    << type << ","
-                    << (track.code_reliable ? "1" : "0") << ","
-                    << (track.altitude_reliable ? "1" : "0") << "\n";            
-
-
-            last_hit[track.id] = track.hit_count;
-        }
-#endif        
     }
 }
 
@@ -682,7 +636,15 @@ ProcessingConfig load_config(const std::string& config_file) {
 // ============================================================================
 
 int main(int argc, char* argv[]) {
-    std::string config_file = "../radar.conf";
+    // Настройка логгера
+    auto& logger = Logger::instance();
+    logger.set_level(LogLevel::INFO);
+    logger.set_console_output(true);
+    logger.set_file_output("radar_processing.log");
+    
+    VRL_LOG_INFO(modules::MAIN, "=== Step 2+3: Combined Plot Formation and Track Processing ===");
+    
+    std::string config_file = "../config/radar.conf";
     std::string input_file = "replies.txt";
     std::string tracks_file = "tracks_combined.txt";
     
@@ -690,10 +652,9 @@ int main(int argc, char* argv[]) {
     if (argc > 2) input_file = argv[2];
     if (argc > 3) tracks_file = argv[3];
     
-    std::cout << "=== Step 2+3: Combined Plot Formation and Track Processing ===\n";
-    std::cout << "Config: " << config_file << "\n";
-    std::cout << "Input: " << input_file << "\n";
-    std::cout << "Tracks output: " << tracks_file << "\n\n";
+    VRL_LOG_DEBUG(modules::MAIN, "Config: " + config_file);
+    VRL_LOG_DEBUG(modules::MAIN, "Input: " + input_file);
+    VRL_LOG_DEBUG(modules::MAIN, "Tracks output: " + tracks_file);
     
     ProcessingConfig config = load_config(config_file);
     config.input_file = input_file;
@@ -882,5 +843,6 @@ int main(int argc, char* argv[]) {
         std::cout << "Plots written to " << config.plots_file << "\n";
     }
     
+    VRL_LOG_INFO(modules::MAIN, "Processing complete");
     return 0;
 }

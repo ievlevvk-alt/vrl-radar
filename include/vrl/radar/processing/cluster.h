@@ -84,6 +84,29 @@ struct TargetCluster {
         }
         return result;
     }
+    
+    // Ширина кластера в дискретах азимута (только там, где были ответы)
+    uint16_t azimuth_span() const {
+        if (scans.empty()) return 0;
+        
+        int16_t span = last_reply_azimuth - start_azimuth;
+        if (span < 0) span += 4096;
+        return static_cast<uint16_t>(span);
+    }
+    
+    // Ширина кластера по дальности
+    uint16_t range_span() const {
+        return max_range - min_range;
+    }
+    
+    // Количество зондирований с ответами
+    size_t reply_scans_count() const {
+        size_t count = 0;
+        for (const auto& scan : scans) {
+            if (scan.has_replies()) count++;
+        }
+        return count;
+    }
 };
 
 // ============================================================================

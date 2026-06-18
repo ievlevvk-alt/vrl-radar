@@ -1,44 +1,163 @@
 // src/processing/tracker.cpp
-#include "vrl/radar/processing/tracker.h"  // Теперь включает kalman_filter.h
+#include "vrl/radar/processing/tracker.h"
+#include "vrl/radar/utils/logger.h"
 #include <algorithm>
 #include <cmath>
 #include <iostream>
+
+using namespace vrl::radar::utils;
 
 namespace vrl {
 namespace radar {
 
 // ============================================================================
-// REVOLUTION KALMAN FILTER - ЭТИ ФУНКЦИИ ДОЛЖНЫ БЫТЬ В kalman_filter.cpp
-// НО ДЛЯ ТЕСТА МОЖЕМ ОСТАВИТЬ ИХ ЗДЕСЬ
+// REVOLUTION KALMAN FILTER
 // ============================================================================
 
-// Если RevolutionKalmanFilter определен в kalman_filter.h,
-// то эти функции должны быть в kalman_filter.cpp.
-// Но для простоты мы можем оставить их здесь.
+RevolutionKalmanFilter::RevolutionKalmanFilter() 
+    : Q_(0.1), R_(1.0), initialized_(false) {
+    update_matrices();
+}
+
+RevolutionKalmanFilter::RevolutionKalmanFilter(double process_noise, double measurement_noise)
+    : Q_(process_noise), R_(measurement_noise), initialized_(false) {
+    update_matrices();
+}
+
+void RevolutionKalmanFilter::update_matrices() {
+    for (int i = 0; i < 4; ++i) {
+        for (int j = 0; j < 4; ++j) {
+            P_[i][j] = (i == j) ? 100.0 : 0.0;
+        }
+    }
+}
+
+void RevolutionKalmanFilter::init(double x, double y, uint32_t revolution) {
+    VRL_LOG_DEBUG(modules::KALMAN, "Initializing filter at (" + std::to_string(x) + ", " + 
+                  std::to_string(y) + ") rev " + std::to_string(revolution));
+    
+    x_ = x;
+    y_ = y;
+    vx_ = 0.0;
+    vy_ = 0.0;
+    last_revolution_ = revolution;
+    
+    for (int i = 0; i < 4; ++i) {
+        P_[i][i] = 100.0;
+    }
+    
+    initialized_ = true;
+}
+
+void RevolutionKalmanFilter::predict(uint32_t delta_revolutions) {
+    if (!initialized_ || delta_revolutions == 0) return;
+    
+    double dt = static_cast<double>(delta_revolutions);
+    
+    double old_x = x_;
+    double old_y = y_;
+    
+    x_ = x_ + vx_ * dt;
+    y_ = y_ + vy_ * dt;
+    
+    for (int i = 0; i < 4; ++i) {
+        P_[i][i] += Q_ * dt;
+    }
+    
+    VRL_LOG_TRACE(modules::KALMAN, "Predicted: (" + std::to_string(x_) + ", " + 
+                  std::to_string(y_) + ") from (" + std::to_string(old_x) + ", " + 
+                  std::to_string(old_y) + ") dt=" + std::to_string(dt));
+}
+
+void RevolutionKalmanFilter::update(double x, double y, uint32_t revolution) {
+    if (!initialized_) {
+        init(x, y, revolution);
+        return;
+    }
+    
+    uint32_t delta_rev = revolution - last_revolution_;
+    if (delta_rev > 0) {
+        predict(delta_rev);
+    }
+    
+    double dx = x - x_;
+    double dy = y - y_;
+    
+    double K_x = P_[0][0] / (P_[0][0] + R_);
+    double K_y = P_[1][1] / (P_[1][1] + R_);
+    
+    x_ = x_ + K_x * dx;
+    y_ = y_ + K_y * dy;
+    
+    if (delta_rev > 0) {
+        vx_ = (x_ - (x_ - vx_ * delta_rev)) / delta_rev;
+        vy_ = (y_ - (y_ - vy_ * delta_rev)) / delta_rev;
+    }
+    
+    P_[0][0] = (1 - K_x) * P_[0][0];
+    P_[1][1] = (1 - K_y) * P_[1][1];
+    
+    last_revolution_ = revolution;
+    
+    VRL_LOG_TRACE(modules::KALMAN, "Updated: (" + std::to_string(x_) + ", " + 
+                  std::to_string(y_) + ") speed=(" + std::to_string(vx_) + ", " + 
+                  std::to_string(vy_) + ")");
+}
+
+std::pair<double, double> RevolutionKalmanFilter::predict_position(uint32_t delta_revolutions) const {
+    if (!initialized_) return {0.0, 0.0};
+    return {x_ + vx_ * delta_revolutions, y_ + vy_ * delta_revolutions};
+}
 
 // ============================================================================
-// TRACK MANAGER IMPLEMENTATION
+// TRACK MANAGER
 // ============================================================================
 
-TrackManager::TrackManager(const TrackerConfig& config) : config_(config), next_id_(1) {}
+// Структура TrackWithFilter определена в заголовочном файле,
+// поэтому здесь её НЕ определяем.
+
+TrackManager::TrackManager(const TrackerConfig& config) : config_(config), next_id_(1) {
+    VRL_LOG_INFO(modules::TRACKER, "TrackManager initialized");
+    VRL_LOG_DEBUG(modules::TRACKER, "Config: min_hits=" + std::to_string(config.min_hits_to_confirm) +
+                  ", max_coast=" + std::to_string(config.max_coast_count) +
+                  ", gate_dist=" + std::to_string(config.max_gate_distance) +
+                  ", gate_az=" + std::to_string(config.max_gate_azimuth));
+}
 
 void TrackManager::process_targets(const std::vector<TargetReport>& targets, uint32_t revolution) {
-    if (config_.debug_mode) {
-        std::cout << "[TrackManager] Revolution " << revolution 
-                  << ": processing " << targets.size() << " targets\n";
+    VRL_LOG_DEBUG(modules::TRACKER, "Processing " + std::to_string(targets.size()) + 
+                  " targets at revolution " + std::to_string(revolution));
+    
+    if (targets.empty()) {
+        VRL_LOG_WARN(modules::TRACKER, "No targets to process at revolution " + 
+                     std::to_string(revolution));
+        return;
     }
+    
+    size_t prev_tracks = tracks_.size();
     
     update_tracks(targets, revolution);
     create_new_tracks(targets, revolution);
     manage_track_states(revolution);
     
+    VRL_LOG_DEBUG(modules::TRACKER, "Tracks: " + std::to_string(tracks_.size()) + 
+                  " (was " + std::to_string(prev_tracks) + ")");
+    
     if (config_.debug_mode) {
-        std::cout << "[TrackManager] Active tracks: " << tracks_.size() << "\n";
+        int confirmed = 0, coasting = 0, new_tracks = 0;
+        for (const auto& [id, twf] : tracks_) {
+            if (twf.track.state == TrackState::ACTIVE) confirmed++;
+            else if (twf.track.state == TrackState::COASTING) coasting++;
+            else if (twf.track.state == TrackState::NEW) new_tracks++;
+        }
+        VRL_LOG_DEBUG(modules::TRACKER, "Track states: ACTIVE=" + std::to_string(confirmed) +
+                      ", COASTING=" + std::to_string(coasting) + ", NEW=" + std::to_string(new_tracks));
     }
 }
 
 void TrackManager::update_tracks(const std::vector<TargetReport>& targets, uint32_t revolution) {
     std::vector<bool> target_matched(targets.size(), false);
+    int updates = 0;
     
     for (auto& [id, twf] : tracks_) {
         auto& track = twf.track;
@@ -113,13 +232,14 @@ void TrackManager::update_tracks(const std::vector<TargetReport>& targets, uint3
             track.confidence = std::min(1.0, static_cast<double>(track.hit_count) / 10.0);
             track.position_error = best_distance;
             track.add_history(target);
+            updates++;
             
             if (track.hit_count >= config_.min_hits_to_confirm && 
                 track.state == TrackState::NEW) {
                 track.state = TrackState::ACTIVE;
-                if (config_.debug_mode) {
-                    std::cout << "[TrackManager] Track " << track.id << " confirmed\n";
-                }
+                VRL_LOG_INFO(modules::TRACKER, "Track " + std::to_string(track.id) + 
+                             " confirmed at rev " + std::to_string(revolution) +
+                             " (hits=" + std::to_string(track.hit_count) + ")");
             }
         } else {
             track.coast_count += (delta_rev > 0) ? delta_rev : 1;
@@ -127,11 +247,12 @@ void TrackManager::update_tracks(const std::vector<TargetReport>& targets, uint3
             
             if (track.coast_count >= config_.max_coast_count) {
                 track.state = TrackState::DROPPED;
-                if (config_.debug_mode) {
-                    std::cout << "[TrackManager] Track " << track.id << " dropped\n";
-                }
+                VRL_LOG_DEBUG(modules::TRACKER, "Track " + std::to_string(track.id) + 
+                              " dropped (coast=" + std::to_string(track.coast_count) + ")");
             } else if (track.state == TrackState::ACTIVE && track.coast_count > 0) {
                 track.state = TrackState::COASTING;
+                VRL_LOG_DEBUG(modules::TRACKER, "Track " + std::to_string(track.id) + 
+                              " coasting (coast=" + std::to_string(track.coast_count) + ")");
                 if (delta_rev > 0) {
                     auto [pred_x, pred_y] = filter.predict_position(delta_rev);
                     track.x = pred_x;
@@ -142,6 +263,10 @@ void TrackManager::update_tracks(const std::vector<TargetReport>& targets, uint3
                 }
             }
         }
+    }
+    
+    if (updates > 0) {
+        VRL_LOG_TRACE(modules::TRACKER, "Updated " + std::to_string(updates) + " tracks");
     }
     
     auto it = tracks_.begin();
@@ -155,6 +280,8 @@ void TrackManager::update_tracks(const std::vector<TargetReport>& targets, uint3
 }
 
 void TrackManager::create_new_tracks(const std::vector<TargetReport>& targets, uint32_t revolution) {
+    int created = 0;
+    
     for (const auto& target : targets) {
         bool already_tracked = false;
         
@@ -195,17 +322,23 @@ void TrackManager::create_new_tracks(const std::vector<TargetReport>& targets, u
             filter.init(target.x, target.y, revolution);
             
             tracks_[new_track.id] = TrackWithFilter(new_track, filter);
+            created++;
             
-            if (config_.debug_mode) {
-                std::cout << "[TrackManager] Created new track " << new_track.id 
-                          << " at rev " << revolution << "\n";
-            }
+            VRL_LOG_DEBUG(modules::TRACKER, "Created new track " + std::to_string(new_track.id) + 
+                          " at rev " + std::to_string(revolution) +
+                          " pos=(" + std::to_string(target.x) + ", " + std::to_string(target.y) + ")");
         }
+    }
+    
+    if (created > 0) {
+        VRL_LOG_DEBUG(modules::TRACKER, "Created " + std::to_string(created) + " new tracks");
     }
 }
 
 void TrackManager::manage_track_states(uint32_t revolution) {
-    (void)revolution;  // Подавляем предупреждение о неиспользуемом параметре
+    (void)revolution;
+    int coasting_updated = 0;
+    
     for (auto& [id, twf] : tracks_) {
         auto& track = twf.track;
         
@@ -215,7 +348,12 @@ void TrackManager::manage_track_states(uint32_t revolution) {
         
         if (track.state == TrackState::COASTING) {
             track.confidence = std::max(0.0, track.confidence - 0.05);
+            coasting_updated++;
         }
+    }
+    
+    if (coasting_updated > 0) {
+        VRL_LOG_TRACE(modules::TRACKER, "Updated " + std::to_string(coasting_updated) + " coasting tracks");
     }
 }
 
@@ -268,11 +406,10 @@ std::vector<Track> TrackManager::get_confirmed_tracks() const {
 }
 
 void TrackManager::reset() {
+    size_t old_size = tracks_.size();
     tracks_.clear();
     next_id_ = 1;
-    if (config_.debug_mode) {
-        std::cout << "[TrackManager] Reset all tracks\n";
-    }
+    VRL_LOG_INFO(modules::TRACKER, "Reset all tracks (cleared " + std::to_string(old_size) + " tracks)");
 }
 
 } // namespace radar

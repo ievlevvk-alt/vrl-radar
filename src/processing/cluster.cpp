@@ -1,11 +1,14 @@
 // src/processing/cluster.cpp
 #include "vrl/radar/processing/cluster.h"
 #include "vrl/radar/utils/utils.h"
+#include "vrl/radar/utils/logger.h"
 #include <algorithm>
 #include <cmath>
 #include <map>
 #include <set>
 #include <iostream>
+
+using namespace vrl::radar::utils;
 
 namespace vrl {
 namespace radar {
@@ -15,9 +18,15 @@ namespace radar {
 // ============================================================================
 
 ClusterTracker::ClusterTracker(int max_gap_azimuth, int range_window)
-    : max_gap_azimuth_(max_gap_azimuth), range_window_(range_window) {}
+    : max_gap_azimuth_(max_gap_azimuth), range_window_(range_window) {
+    VRL_LOG_DEBUG(modules::CLUSTER, "ClusterTracker initialized: gap=" + 
+                  std::to_string(max_gap_azimuth) + ", window=" + std::to_string(range_window));
+}
 
 void ClusterTracker::process_scan(const ScanReplies& scan) {
+    VRL_LOG_TRACE(modules::CLUSTER, "Processing scan at azimuth " + std::to_string(scan.azimuth) +
+                  " with " + std::to_string(scan.reply_count()) + " replies");
+    
     update_existing_clusters(scan);
     
     if (scan.has_replies()) {
@@ -28,6 +37,8 @@ void ClusterTracker::process_scan(const ScanReplies& scan) {
 }
 
 void ClusterTracker::update_existing_clusters(const ScanReplies& scan) {
+    int updated = 0;
+    
     for (auto& cluster : active_clusters_) {
         bool range_match = false;
         
@@ -57,7 +68,12 @@ void ClusterTracker::update_existing_clusters(const ScanReplies& scan) {
         
         if (range_match && cluster.is_active(scan.azimuth, max_gap_azimuth_)) {
             cluster.add_scan(scan);
+            updated++;
         }
+    }
+    
+    if (updated > 0) {
+        VRL_LOG_TRACE(modules::CLUSTER, "Updated " + std::to_string(updated) + " clusters");
     }
 }
 
@@ -85,17 +101,32 @@ void ClusterTracker::try_create_new_clusters(const ScanReplies& scan) {
     TargetCluster new_cluster;
     new_cluster.add_scan(scan);
     active_clusters_.push_back(std::move(new_cluster));
+    
+    VRL_LOG_TRACE(modules::CLUSTER, "Created new cluster at azimuth " + std::to_string(scan.azimuth) +
+                  " with " + std::to_string(scan.reply_count()) + " replies");
 }
 
 void ClusterTracker::complete_expired_clusters(uint16_t current_azimuth) {
     auto it = active_clusters_.begin();
+    int completed = 0;
+    
     while (it != active_clusters_.end()) {
         if (!it->is_active(current_azimuth, max_gap_azimuth_)) {
+            VRL_LOG_DEBUG(modules::CLUSTER, "Cluster completed: azimuth_span=" + 
+                          std::to_string(it->azimuth_span()) + 
+                          ", range_span=" + std::to_string(it->range_span()) +
+                          ", replies=" + std::to_string(it->get_all_rbs().size() + 
+                                                        it->get_all_uvd().size()));
             completed_clusters_.push_back(std::move(*it));
             it = active_clusters_.erase(it);
+            completed++;
         } else {
             ++it;
         }
+    }
+    
+    if (completed > 0) {
+        VRL_LOG_DEBUG(modules::CLUSTER, "Completed " + std::to_string(completed) + " clusters");
     }
 }
 
@@ -110,8 +141,12 @@ const std::vector<TargetCluster>& ClusterTracker::get_active_clusters() const {
 }
 
 void ClusterTracker::reset() {
+    size_t old_active = active_clusters_.size();
+    size_t old_completed = completed_clusters_.size();
     active_clusters_.clear();
     completed_clusters_.clear();
+    VRL_LOG_DEBUG(modules::CLUSTER, "Reset: cleared " + std::to_string(old_active) + 
+                  " active and " + std::to_string(old_completed) + " completed clusters");
 }
 
 // ============================================================================
@@ -119,9 +154,15 @@ void ClusterTracker::reset() {
 // ============================================================================
 
 ClusterProcessor::ClusterProcessor(const RadarConfig& config) 
-    : config_(config), reply_processor_(config) {}
+    : config_(config), reply_processor_(config) {
+    VRL_LOG_DEBUG(modules::CLUSTER, "ClusterProcessor initialized: range_bin_rbs=" + 
+                  std::to_string(config.range_bin_rbs) + ", range_bin_uvd=" + 
+                  std::to_string(config.range_bin_uvd));
+}
 
 std::vector<ClusterProcessor::RangeGroup> ClusterProcessor::group_by_range(const TargetCluster& cluster) {
+    VRL_LOG_TRACE(modules::CLUSTER, "Grouping " + std::to_string(cluster.scans.size()) + " scans by range");
+    
     std::vector<RangeGroup> groups;
     std::map<uint16_t, RangeGroup> range_map;
     
@@ -167,6 +208,7 @@ std::vector<ClusterProcessor::RangeGroup> ClusterProcessor::group_by_range(const
         groups.push_back(std::move(group));
     }
     
+    VRL_LOG_TRACE(modules::CLUSTER, "Created " + std::to_string(groups.size()) + " range groups");
     return groups;
 }
 
@@ -223,7 +265,10 @@ void ClusterProcessor::decode_uvd_info(uint32_t data20, TargetReport& report) {
 std::optional<TargetReport> ClusterProcessor::process_rbs_group(const RangeGroup& group) {
     if (group.rbs_replies.empty()) return std::nullopt;
     
-    TargetReport report = TargetReport::make_rbs();  // Используем фабричный метод
+    VRL_LOG_TRACE(modules::CLUSTER, "Processing RBS group: " + std::to_string(group.rbs_replies.size()) + 
+                  " replies at range " + std::to_string(group.nominal_range));
+    
+    TargetReport report = TargetReport::make_rbs();
     report.type = TargetReport::SourceType::RBS;
     report.signal_strength = 0;
     report.is_reflection = false;
@@ -277,7 +322,12 @@ std::optional<TargetReport> ClusterProcessor::process_rbs_group(const RangeGroup
         report.signal_strength = static_cast<uint8_t>(best_confidence * 255);
         report.is_sls_blanked = check_sidelobe(*best_reply);
         report.is_garbled = (best_confidence < 0.5);
+        
+        VRL_LOG_TRACE(modules::CLUSTER, "RBS target: code=0" + std::to_string(best_code) + 
+                      ", conf=" + std::to_string(best_confidence));
     } else {
+        VRL_LOG_WARN(modules::CLUSTER, "RBS group rejected: low confidence (" + 
+                     std::to_string(best_confidence) + ")");
         return std::nullopt;
     }
     
@@ -287,7 +337,10 @@ std::optional<TargetReport> ClusterProcessor::process_rbs_group(const RangeGroup
 std::optional<TargetReport> ClusterProcessor::process_uvd_group(const RangeGroup& group) {
     if (group.uvd_replies.empty()) return std::nullopt;
     
-    TargetReport report = TargetReport::make_uvd();  // Используем фабричный метод
+    VRL_LOG_TRACE(modules::CLUSTER, "Processing UVD group: " + std::to_string(group.uvd_replies.size()) + 
+                  " replies at range " + std::to_string(group.nominal_range));
+    
+    TargetReport report = TargetReport::make_uvd();
     report.type = TargetReport::SourceType::UVD;
     report.signal_strength = 0;
     report.is_reflection = false;
@@ -336,7 +389,12 @@ std::optional<TargetReport> ClusterProcessor::process_uvd_group(const RangeGroup
         report.signal_strength = static_cast<uint8_t>(best_confidence * 255);
         report.is_sls_blanked = check_sidelobe(*best_reply);
         report.is_garbled = (best_confidence < 0.5) || (best_reply->error_mask != 0);
+        
+        VRL_LOG_TRACE(modules::CLUSTER, "UVD target: data=0x" + std::to_string(best_data) + 
+                      ", conf=" + std::to_string(best_confidence));
     } else {
+        VRL_LOG_WARN(modules::CLUSTER, "UVD group rejected: low confidence (" + 
+                     std::to_string(best_confidence) + ")");
         return std::nullopt;
     }
     
@@ -350,6 +408,9 @@ std::vector<TargetReport> ClusterProcessor::process_garbled_group(const RangeGro
         return reports;
     }
     
+    VRL_LOG_DEBUG(modules::CLUSTER, "Processing garbled group with " + 
+                  std::to_string(group.rbs_replies.size()) + " RBS replies");
+    
     std::vector<RBSReply> all_rbs;
     for (const auto* ptr : group.rbs_replies) {
         all_rbs.push_back(*ptr);
@@ -358,8 +419,12 @@ std::vector<TargetReport> ClusterProcessor::process_garbled_group(const RangeGro
     auto result = garbling_solver_->separate_rbs(all_rbs);
     
     if (result.confidence > 0.5 && !result.separated_replies.empty()) {
+        VRL_LOG_INFO(modules::CLUSTER, "Split " + std::to_string(all_rbs.size()) + 
+                     " replies into " + std::to_string(result.separated_replies.size()) + 
+                     " targets (conf=" + std::to_string(result.confidence) + ")");
+        
         for (const auto& separated : result.separated_replies) {
-            TargetReport report = TargetReport::make_rbs();  // Используем фабричный метод
+            TargetReport report = TargetReport::make_rbs();
             report.type = TargetReport::SourceType::RBS;
             report.azimuth_deg = separated.azimuth * RadarConfig::azimuth_per_bin;
             report.range_m = separated.range * config_.range_bin_rbs;
@@ -371,18 +436,27 @@ std::vector<TargetReport> ClusterProcessor::process_garbled_group(const RangeGro
             polar_to_xy(report.range_m, report.azimuth_deg, report.x, report.y);
             reports.push_back(report);
         }
+    } else {
+        VRL_LOG_WARN(modules::CLUSTER, "Failed to split garbled group (conf=" + 
+                     std::to_string(result.confidence) + ")");
     }
     
     return reports;
 }
 
 std::vector<TargetReport> ClusterProcessor::process_cluster(const TargetCluster& cluster) {
+    VRL_LOG_DEBUG(modules::CLUSTER, "Processing cluster with " + 
+                  std::to_string(cluster.scans.size()) + " scans");
+    
     std::vector<TargetReport> reports;
     
     auto range_groups = group_by_range(cluster);
     
     for (const auto& group : range_groups) {
         if (group.total_replies() < static_cast<size_t>(min_hits_)) {
+            VRL_LOG_TRACE(modules::CLUSTER, "Skipping group: insufficient replies (" + 
+                          std::to_string(group.total_replies()) + " < " + 
+                          std::to_string(min_hits_) + ")");
             continue;
         }
         
@@ -405,6 +479,11 @@ std::vector<TargetReport> ClusterProcessor::process_cluster(const TargetCluster&
                 if (report) reports.push_back(*report);
             }
         }
+    }
+    
+    if (!reports.empty()) {
+        VRL_LOG_DEBUG(modules::CLUSTER, "Generated " + std::to_string(reports.size()) + 
+                      " reports from cluster");
     }
     
     return reports;

@@ -1,19 +1,27 @@
 // src/simulation/simulator.cpp
 #include "vrl/radar/simulation/simulator.h"
+#include "vrl/radar/utils/logger.h"
 #include <cmath>
 #include <algorithm>
 #include <random>
+
+using namespace vrl::radar::utils;
 
 namespace vrl {
 namespace radar {
 
 ReplySimulator::ReplySimulator(const SimulatorConfig& config)
-    : config_(config), rng_(std::random_device{}()) {}
+    : config_(config), rng_(std::random_device{}()) {
+    VRL_LOG_DEBUG(modules::SIMULATOR, "ReplySimulator initialized: RBS SNR=" + 
+                  std::to_string(config.rbs.snr_db) + ", UVD SNR=" + 
+                  std::to_string(config.uvd.snr_db) + ", SLS=" + 
+                  (config.sls.enabled ? "enabled" : "disabled"));
+}
 
 void ReplySimulator::add_noise_to_amplitudes(
     std::array<uint8_t, RBSReply::ETHER_POSITIONS>& amps,
-    double snr_db
-) {
+    double snr_db) {
+    
     if (snr_db <= 0) return;
     
     double signal_power = 128.0;
@@ -22,18 +30,23 @@ void ReplySimulator::add_noise_to_amplitudes(
     
     std::normal_distribution<double> noise_dist(0.0, noise_std);
     
+    int noise_added = 0;
     for (auto& amp : amps) {
         if (amp > 0) {
             double noisy = amp + noise_dist(rng_);
             amp = static_cast<uint8_t>(std::clamp(noisy, 0.0, 255.0));
+            noise_added++;
         }
     }
+    
+    VRL_LOG_TRACE(modules::SIMULATOR, "Added noise to " + std::to_string(noise_added) + 
+                  " positions (SNR=" + std::to_string(snr_db) + "dB)");
 }
 
 void ReplySimulator::add_noise_to_amplitudes(
     std::array<uint8_t, UVDReply::ETHER_POSITIONS>& amps,
-    double snr_db
-) {
+    double snr_db) {
+    
     if (snr_db <= 0) return;
     
     double signal_power = 128.0;
@@ -42,12 +55,17 @@ void ReplySimulator::add_noise_to_amplitudes(
     
     std::normal_distribution<double> noise_dist(0.0, noise_std);
     
+    int noise_added = 0;
     for (auto& amp : amps) {
         if (amp > 0) {
             double noisy = amp + noise_dist(rng_);
             amp = static_cast<uint8_t>(std::clamp(noisy, 0.0, 255.0));
+            noise_added++;
         }
     }
+    
+    VRL_LOG_TRACE(modules::SIMULATOR, "Added noise to " + std::to_string(noise_added) + 
+                  " positions (SNR=" + std::to_string(snr_db) + "dB)");
 }
 
 void ReplySimulator::generate_sls_channel_rbs(RBSReply& reply) {
@@ -58,6 +76,8 @@ void ReplySimulator::generate_sls_channel_rbs(RBSReply& reply) {
     
     std::bernoulli_distribution sidelobe_dist(config_.sls.sidelobe_probability);
     bool is_sidelobe = sidelobe_dist(rng_);
+    
+    VRL_LOG_TRACE(modules::SIMULATOR, "SLS: " + std::string(is_sidelobe ? "sidelobe" : "mainlobe"));
     
     for (size_t i = 0; i < RBSReply::ETHER_POSITIONS; ++i) {
         if (is_sidelobe) {
@@ -100,8 +120,12 @@ RBSReply ReplySimulator::generate_rbs(
     uint16_t azimuth,
     uint16_t range,
     uint16_t code12,
-    bool spi
-) {
+    bool spi) {
+    
+    VRL_LOG_TRACE(modules::SIMULATOR, "Generating RBS: az=" + std::to_string(azimuth) + 
+                  ", range=" + std::to_string(range) + ", code=0" + 
+                  std::to_string(code12) + ", spi=" + (spi ? "true" : "false"));
+    
     RBSReply reply;
     reply.azimuth = azimuth;
     reply.range = range;
@@ -111,34 +135,26 @@ RBSReply ReplySimulator::generate_rbs(
     uint8_t base_amp = 200;
     reply.ether_amplitudes.fill(0);
     
-    // F1
     reply.ether_amplitudes[0] = base_amp;
     
-    // Биты C1,A1,C2,A2,C4,A4
     for (int i = 0; i < 6; ++i) {
         if ((code12 >> i) & 1) {
             reply.ether_amplitudes[1 + i] = base_amp;
         }
     }
     
-    // X - центральная пауза
     reply.ether_amplitudes[7] = 0;
     
-    // Биты B1,D1,B2,D2,B4,D4
     for (int i = 0; i < 6; ++i) {
         if ((code12 >> (6 + i)) & 1) {
             reply.ether_amplitudes[8 + i] = base_amp;
         }
     }
     
-    // F2
     reply.ether_amplitudes[14] = base_amp;
-    
-    // SPARE1, SPARE2
     reply.ether_amplitudes[15] = 0;
     reply.ether_amplitudes[16] = 0;
     
-    // SPI
     if (spi) {
         reply.ether_amplitudes[17] = base_amp;
     }
@@ -147,12 +163,15 @@ RBSReply ReplySimulator::generate_rbs(
     
     if (config_.rbs.amp_variation > 0) {
         std::normal_distribution<double> amp_dist(1.0, config_.rbs.amp_variation);
+        int varied = 0;
         for (auto& amp : reply.ether_amplitudes) {
             if (amp > 0) {
                 double factor = std::clamp(amp_dist(rng_), 0.5, 1.5);
                 amp = static_cast<uint8_t>(std::clamp(amp * factor, 0.0, 255.0));
+                varied++;
             }
         }
+        VRL_LOG_TRACE(modules::SIMULATOR, "Varied " + std::to_string(varied) + " amplitudes");
     }
     
     generate_sls_channel_rbs(reply);
@@ -169,8 +188,11 @@ RBSReply ReplySimulator::generate_rbs(
 UVDReply ReplySimulator::generate_uvd(
     uint16_t azimuth,
     uint16_t range,
-    uint32_t data20
-) {
+    uint32_t data20) {
+    
+    VRL_LOG_TRACE(modules::SIMULATOR, "Generating UVD: az=" + std::to_string(azimuth) + 
+                  ", range=" + std::to_string(range) + ", data=0x" + std::to_string(data20));
+    
     UVDReply reply;
     reply.azimuth = azimuth;
     reply.range = range;
@@ -197,9 +219,9 @@ UVDReply ReplySimulator::generate_uvd(
     add_noise_to_amplitudes(reply.ether_amplitudes, config_.uvd.snr_db);
     generate_sls_channel_uvd(reply);
     
-    // Вычисляем error_mask
     reply.error_mask = 0;
     uint8_t threshold = 50;
+    int errors = 0;
     
     for (int i = 0; i < 20; ++i) {
         uint8_t left1 = reply.ether_amplitudes[i * 2];
@@ -214,7 +236,12 @@ UVDReply ReplySimulator::generate_uvd(
         
         if (repeat1_one != repeat2_one || repeat1_zero != repeat2_zero) {
             reply.error_mask |= (1 << i);
+            errors++;
         }
+    }
+    
+    if (errors > 0) {
+        VRL_LOG_TRACE(modules::SIMULATOR, "UVD: " + std::to_string(errors) + " bit errors");
     }
     
     reply.is_valid = true;
@@ -231,8 +258,11 @@ ReplySimulator::OverlapResult ReplySimulator::mix_two_rbs(
     const RBSReply& r1,
     const RBSReply& r2,
     int16_t range_offset,
-    double amp_ratio
-) {
+    double amp_ratio) {
+    
+    VRL_LOG_DEBUG(modules::SIMULATOR, "Mixing two RBS replies: offset=" + 
+                  std::to_string(range_offset) + ", ratio=" + std::to_string(amp_ratio));
+    
     OverlapResult result;
     result.rbs_mixture.push_back(r1);
     result.rbs_mixture.push_back(r2);
@@ -243,8 +273,11 @@ ReplySimulator::OverlapResult ReplySimulator::mix_two_uvd(
     const UVDReply& u1,
     const UVDReply& u2,
     int16_t range_offset,
-    double amp_ratio
-) {
+    double amp_ratio) {
+    
+    VRL_LOG_DEBUG(modules::SIMULATOR, "Mixing two UVD replies: offset=" + 
+                  std::to_string(range_offset) + ", ratio=" + std::to_string(amp_ratio));
+    
     OverlapResult result;
     result.uvd_mixture.push_back(u1);
     result.uvd_mixture.push_back(u2);
@@ -253,8 +286,10 @@ ReplySimulator::OverlapResult ReplySimulator::mix_two_uvd(
 
 uint32_t ReplySimulator::compute_uvd_error_mask(
     const std::array<uint8_t, UVDReply::ETHER_POSITIONS>& amps,
-    uint32_t original_data20
-) {
+    uint32_t original_data20) {
+    
+    (void)original_data20;  // Подавляем предупреждение
+    
     uint32_t mask = 0;
     uint8_t threshold = 50;
     
