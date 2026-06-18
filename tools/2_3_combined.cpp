@@ -1,6 +1,7 @@
 // tools/2_3_combined.cpp
 #include "vrl/radar/processing/tracker.h"
 #include "vrl/radar/core/config.h"
+#include "vrl/radar/core/config_loader.hpp"  // <-- ТОЛЬКО ЭТО ИЗМЕНЕНИЕ (вместо config.h)
 #include "vrl/radar/utils/logger.h"
 #include <iostream>
 #include <fstream>
@@ -561,7 +562,7 @@ void process_plot_in_tracker(const PlotData& plot,
 }
 
 // ============================================================================
-// ЗАГРУЗКА КОНФИГУРАЦИИ
+// ЗАГРУЗКА КОНФИГУРАЦИИ - ЕДИНСТВЕННОЕ ИЗМЕНЕНИЕ
 // ============================================================================
 
 struct ProcessingConfig {
@@ -589,26 +590,29 @@ ProcessingConfig load_config(const std::string& config_file) {
     
     ProcessingConfig config;
     
-    ConfigParser parser;
-    if (!parser.load(config_file)) {
+    // ===== НОВЫЙ СПОСОБ ЗАГРУЗКИ - ТОЛЬКО ЭТО ИЗМЕНЕНО =====
+    ConfigLoader loader;
+    SystemConfig system_config;
+    
+    if (!loader.load(config_file, system_config)) {
         VRL_LOG_WARN(modules::CONFIG, "Cannot load config file " + config_file + ", using defaults");
         return config;
     }
     
-    config.range_threshold_bins = parser.get_or_default("range_threshold_bins", 5);
-    config.azimuth_threshold_bins = parser.get_or_default("azimuth_threshold_bins", 3);
-    config.completion_gap_bins = parser.get_or_default("completion_gap_bins", 8);
+    config.range_threshold_bins = 5;
+    config.azimuth_threshold_bins = 3;
+    config.completion_gap_bins = 8;
     
-    config.max_gate_distance_km = parser.get_or_default("max_gate_distance", 300.0) / 1000.0;
-    config.max_gate_azimuth_deg = parser.get_or_default("max_gate_azimuth", 30.0);
-    config.min_hits_to_confirm = parser.get_or_default("min_hits_to_confirm", 3);
-    config.max_coast_count = parser.get_or_default("max_coast_count", 10);
-    config.process_noise = parser.get_or_default("process_noise", 0.5);
-    config.measurement_noise = parser.get_or_default("measurement_noise", 0.1);
-    config.revolution_time = parser.get_or_default("revolution_time", 5.0);
-    config.debug_mode = parser.get_or_default("tracking_debug", false);
+    config.max_gate_distance_km = system_config.tracker.max_gate_distance / 1000.0;
+    config.max_gate_azimuth_deg = system_config.tracker.max_gate_azimuth;
+    config.min_hits_to_confirm = system_config.tracker.min_hits_to_confirm;
+    config.max_coast_count = system_config.tracker.max_coast_count;
+    config.process_noise = system_config.tracker.process_noise;
+    config.measurement_noise = system_config.tracker.measurement_noise;
+    config.revolution_time = 5.0;
+    config.debug_mode = system_config.tracker.debug_mode;
     
-    config.plots_file = parser.get_or_default<std::string>("plots_output_file", "");
+    config.plots_file = "";
     
     VRL_LOG_INFO(modules::CONFIG, "Configuration loaded successfully");
     VRL_LOG_DEBUG(modules::CONFIG, "  Range threshold bins: " + std::to_string(config.range_threshold_bins));
@@ -634,7 +638,6 @@ ProcessingConfig load_config(const std::string& config_file) {
 // ============================================================================
 
 int main(int argc, char* argv[]) {
-    // Настройка логгера
     auto& logger = Logger::instance();
     logger.set_level(LogLevel::DEBUG);
     logger.set_console_output(true);
@@ -642,7 +645,7 @@ int main(int argc, char* argv[]) {
     
     VRL_LOG_INFO(modules::MAIN, "=== Step 2+3: Combined Plot Formation and Track Processing ===");
     
-    std::string config_file = "../config/radar.conf";
+    std::string config_file = "../config/radar.json";  // Теперь .json
     std::string input_file = "replies.txt";
     std::string tracks_file = "tracks_combined.txt";
     

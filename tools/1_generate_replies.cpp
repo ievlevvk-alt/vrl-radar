@@ -1,6 +1,6 @@
 // tools/1_generate_replies.cpp
 #include "vrl/radar/simulation/simulator.h"
-#include "vrl/radar/core/config.h"
+#include "vrl/radar/core/config_loader.hpp"
 #include "vrl/radar/utils/logger.h"
 #include <iostream>
 #include <fstream>
@@ -404,14 +404,13 @@ int main(int argc, char* argv[]) {
     VRL_LOG_DEBUG(modules::MAIN, "Duration: " + std::to_string(duration_seconds) + "s");
     VRL_LOG_DEBUG(modules::MAIN, "Output: " + output_file);
 
-    ConfigParser parser;
-    if (!parser.load(config_file)) {
+    ConfigLoader loader;
+    SystemConfig config;
+    if (!loader.load("../config/radar.json", config)) {
         VRL_LOG_ERROR(modules::MAIN, "Cannot load config file: " + config_file);
         return 1;
     }
-    
-    SystemConfig config = ConfigBuilder::build(parser);
-    
+
     VRL_LOG_INFO(modules::MAIN, "Configuration loaded successfully");
     VRL_LOG_DEBUG(modules::MAIN, "RBS targets: " + std::to_string(config.rbs_targets.size()));
     VRL_LOG_DEBUG(modules::MAIN, "UVD targets: " + std::to_string(config.uvd_targets.size()));

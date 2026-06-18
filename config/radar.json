@@ -1,85 +1,84 @@
 {
-    "radar": {
-        "range_bin_rbs": 30.0,
-        "range_bin_uvd": 60.0,
-        "max_azimuth_diff_for_overlap": 2.0,
-        "max_range_diff_for_overlap": 10,
-        "min_amplitude": 10
-    },
     "beamwidth_deg": 5.0,
-    "revolution_time": 5.0,
-    "rbs": {
-        "snr_db": 20.0,
-        "amp_variation": 0.1,
-        "f1f2_amp_ratio": 1.0
-    },
-    "uvd": {
-        "snr_db": 20.0,
-        "error_probability": 0.01
-    },
-    "sls": {
-        "enabled": false,
-        "main_to_sls_ratio": 1.0,
-        "sls_attenuation_db": 20.0,
-        "sidelobe_probability": 0.1
-    },
     "processing": {
         "max_gap_azimuth": 8,
-        "range_window": 30,
-        "range_tolerance": 5,
         "min_hits": 2,
         "output_file": "targets.txt",
-        "range_threshold_bins": 5,
-        "azimuth_threshold_bins": 3,
-        "completion_gap_bins": 8,
-        "plots_output_file": "plots_combined.txt"
+        "range_tolerance": 5,
+        "range_window": 30
     },
-    "tracker": {
-        "min_hits_to_confirm": 3,
-        "max_coast_count": 10,
-        "max_gate_distance": 3000.0,
-        "max_gate_azimuth": 30.0,
-        "process_noise": 0.5,
-        "measurement_noise": 0.1,
-        "enable_uvd_tracking": true,
-        "enable_rbs_tracking": true,
-        "debug_mode": false
+    "radar": {
+        "max_azimuth_diff_for_overlap": 2.0,
+        "max_range_diff_for_overlap": 10,
+        "min_amplitude": 10,
+        "range_bin_rbs": 30.0,
+        "range_bin_uvd": 60.0
+    },
+    "rbs": {
+        "amp_variation": 0.1,
+        "f1f2_amp_ratio": 1.0,
+        "snr_db": 20.0
     },
     "rbs_targets": [
         {
-            "name": "Target_RBS_1234",
-            "azimuth_deg": 45.0,
-            "range_km": 100.0,
-            "rbs_code_octal": 1234,
-            "spi": false,
-            "enabled": true,
-            "update_every_n_revolutions": 1,
-            "revolution_offset": 0,
-            "altitude_meters": 9600,
-            "enable_altitude": true,
             "alternate_code_altitude": true,
-            "use_linear_motion": true,
-            "speed_m_per_s": 200.0,
+            "alternate_data_altitude": false,
+            "altitude_meters": 9600,
+            "azimuth_deg": 45.0,
             "course_deg": 225.0,
+            "enable_altitude": true,
+            "enabled": true,
             "initial_x_km": 75.0,
-            "initial_y_km": 129.9
+            "initial_y_km": 129.9,
+            "name": "Target_RBS_1234",
+            "range_km": 100.0,
+            "rbs_code_octal": 668,
+            "revolution_offset": 0,
+            "speed_m_per_s": 200.0,
+            "spi": false,
+            "update_every_n_revolutions": 1,
+            "use_linear_motion": true
         }
     ],
+    "sls": {
+        "enabled": false,
+        "main_to_sls_ratio": 1.0,
+        "sidelobe_probability": 0.1,
+        "sls_attenuation_db": 20.0
+    },
+    "tracker": {
+        "debug_mode": false,
+        "enable_rbs_tracking": true,
+        "enable_uvd_tracking": true,
+        "max_coast_count": 10,
+        "max_gate_azimuth": 30.0,
+        "max_gate_distance": 3000.0,
+        "measurement_noise": 0.1,
+        "min_hits_to_confirm": 3,
+        "process_noise": 0.5
+    },
+    "uvd": {
+        "error_probability": 0.01,
+        "snr_db": 20.0
+    },
     "uvd_targets": [
         {
-            "name": "Target_UVD_Moving",
-            "azimuth_deg": 45.0,
-            "range_km": 20.0,
-            "uvd_data_dec": 12345,
-            "enabled": true,
-            "altitude_meters": 3000,
-            "enable_altitude": true,
+            "alternate_code_altitude": false,
             "alternate_data_altitude": true,
-            "use_linear_motion": true,
-            "speed_m_per_s": 100.0,
+            "altitude_meters": 3000,
+            "azimuth_deg": 45.0,
             "course_deg": 45.0,
+            "enable_altitude": true,
+            "enabled": true,
             "initial_x_km": 14.14,
-            "initial_y_km": 14.14
+            "initial_y_km": 14.14,
+            "name": "Target_UVD_Moving",
+            "range_km": 20.0,
+            "revolution_offset": 0,
+            "speed_m_per_s": 100.0,
+            "update_every_n_revolutions": 1,
+            "use_linear_motion": true,
+            "uvd_data_dec": 12345
         }
     ]
 }
