@@ -1,8 +1,8 @@
 # src/CMakeLists.txt
 
-# Библиотека VRL Radar
 add_library(vrl_radar STATIC
     core/config.cpp
+    core/config_loader.cpp
     processing/cluster.cpp
     processing/garbling_solver.cpp
     processing/kalman_filter.cpp
@@ -13,14 +13,13 @@ add_library(vrl_radar STATIC
     utils/utils.cpp
 )
 
-# Подключаем зависимости
 target_link_libraries(vrl_radar
     ${SDL2_LIBRARIES}
     ${SDL2_TTF_LIBRARIES}
     ${EIGEN3_LIBRARIES}
+    nlohmann_json  # Используем имя библиотеки, а не ::target
 )
 
-# Устанавливаем include директории
 target_include_directories(vrl_radar
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/../include
@@ -32,7 +31,6 @@ target_include_directories(vrl_radar SYSTEM PUBLIC
     ${EIGEN3_INCLUDE_DIR}
 )
 
-# Добавляем опции компиляции
 target_compile_definitions(vrl_radar
     PUBLIC
         $<$<BOOL:${ENABLE_VERBOSE_LOGGING}>:ENABLE_VERBOSE_LOGGING>
@@ -40,5 +38,4 @@ target_compile_definitions(vrl_radar
         $<$<CONFIG:Debug>:DEBUG>
 )
 
-# Передаем опции в инструменты
 set_property(GLOBAL PROPERTY ENABLE_VERBOSE_LOGGING ${ENABLE_VERBOSE_LOGGING})
