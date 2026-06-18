@@ -1,6 +1,6 @@
 // tools/2_3_combined.cpp
-#include "radar/track_manager.h"
-#include "radar/config_parser.h"
+#include "vrl/radar/processing/tracker.h"
+#include "vrl/radar/core/config.h"
 #include <iostream>
 #include <fstream>
 #include <vector>
@@ -11,7 +11,7 @@
 #include <algorithm>
 #include <set>
 
-using namespace radar;
+using namespace vrl::radar;
 
 // Константы для преобразования
 constexpr double AZIMUTH_BIN_DEG = 360.0 / 4096.0;

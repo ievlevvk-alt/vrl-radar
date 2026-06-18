@@ -1,36 +1,22 @@
-# file: tools/CMakeLists.txt
+# VRL-Radar/tools/CMakeLists.txt
 
-# Консольный процессор
-add_executable(radar_cli radar_processor.cpp)
-target_link_libraries(radar_cli PRIVATE radar_sim)
+# Этап 1: Генерация ответов
+add_executable(1_generate_replies 1_generate_replies.cpp)
+target_link_libraries(1_generate_replies vrl_radar)
 
-# Простой визуализатор
-find_package(SDL2 REQUIRED)
-add_executable(radar_viewer_simple radar_viewer_simple.cpp)
-target_link_libraries(radar_viewer_simple PRIVATE radar_sim ${SDL2_LIBRARIES})
-target_include_directories(radar_viewer_simple PRIVATE ${SDL2_INCLUDE_DIRS})
+# Этап 2+3: Объединённая обработка
+add_executable(2_3_combined 2_3_combined.cpp)
+target_link_libraries(2_3_combined vrl_radar)
 
+# Этап 4: Плеер с отображением
+add_executable(4_radar_player 4_radar_player.cpp)
+target_link_libraries(4_radar_player 
+    vrl_radar
+    ${SDL2_LIBRARIES}
+    ${SDL2_TTF_LIBRARIES}
+)
 
-# GUI визуализатор
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(SDL2 sdl2)
-pkg_check_modules(SDL2_TTF SDL2_ttf)
-
-if(SDL2_FOUND AND SDL2_TTF_FOUND)
-    add_executable(radar_viewer radar_viewer.cpp)
-    target_include_directories(radar_viewer PRIVATE ${SDL2_INCLUDE_DIRS} ${SDL2_TTF_INCLUDE_DIRS})
-    target_link_libraries(radar_viewer PRIVATE 
-        radar_sim 
-        ${SDL2_LIBRARIES} 
-        ${SDL2_TTF_LIBRARIES}
-    )
-    message(STATUS "Building radar_viewer with SDL2 support")
-else()
-    message(STATUS "SDL2 or SDL2_ttf not found - radar_viewer disabled")
-endif()
-
-# Копируем конфигурацию
-configure_file(
-    ${CMAKE_CURRENT_SOURCE_DIR}/../radar.conf
-    ${CMAKE_CURRENT_BINARY_DIR}/radar.conf COPYONLY
+# Устанавливаем утилиты
+install(TARGETS 1_generate_replies 2_3_combined 4_radar_player
+    RUNTIME DESTINATION bin
 )

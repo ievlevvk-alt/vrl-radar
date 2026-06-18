@@ -1,6 +1,6 @@
-# file: CMakeLists.txt
+# VRL-Radar/CMakeLists.txt
 cmake_minimum_required(VERSION 3.10)
-project(RadarSimulator VERSION 0.1.0 LANGUAGES CXX)
+project(VRLRadar VERSION 0.2.0 LANGUAGES C CXX)
 
 # Требуем C++17
 set(CMAKE_CXX_STANDARD 17)
@@ -8,82 +8,42 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Опции сборки
-option(BUILD_TESTS "Build tests" ON)
 option(BUILD_TOOLS "Build tools" ON)
+option(BUILD_TESTS "Build tests" OFF)
+option(BUILD_EXAMPLES "Build examples" OFF)
 
 # Устанавливаем режим сборки по умолчанию
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE "Debug" CACHE STRING "Build type" FORCE)
 endif()
 
-# Поиск Eigen3
+# Поиск зависимостей
 find_package(Eigen3 REQUIRED)
-message(STATUS "Using Eigen3 from: ${EIGEN3_INCLUDE_DIR}")
-
-# Поиск SDL2 через pkg-config
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(SDL2 REQUIRED sdl2)
 pkg_check_modules(SDL2_TTF REQUIRED SDL2_ttf)
 
-# Пути для include
+# Общие include директории
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 include_directories(${EIGEN3_INCLUDE_DIR})
-include_directories(${SDL2_INCLUDE_DIRS})
-include_directories(${SDL2_TTF_INCLUDE_DIRS})
 
-# Основная библиотека
-add_library(radar_sim
-    src/simulator.cpp
-    src/utils.cpp
-    src/grouping.cpp
-    src/cluster_processor.cpp
-    src/radar_system.cpp
-    src/garbling_solver.cpp
-    src/kalman_filter.cpp
-    src/track_manager.cpp
-    src/reply_processor.cpp
-    src/config_parser.cpp
-    src/garbling_solver_threshold.cpp
-    src/garbling_solver_iterative.cpp
-)
+# Сообщаем о найденных зависимостях
+message(STATUS "Using Eigen3 from: ${EIGEN3_INCLUDE_DIR}")
+message(STATUS "Using SDL2: ${SDL2_LIBRARIES}")
+message(STATUS "Using SDL2_ttf: ${SDL2_TTF_LIBRARIES}")
 
-# Подключаем тесты
+# Подключаем поддиректории
+add_subdirectory(src)
+
+if(BUILD_TOOLS)
+    add_subdirectory(tools)
+endif()
+
 if(BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
 endif()
 
-# Подключаем инструменты
-if(BUILD_TOOLS)
-    add_subdirectory(tools)
+if(BUILD_EXAMPLES)
+    add_subdirectory(examples)
 endif()
-
-# === НОВЫЕ УТИЛИТЫ ===
-
-# Этап 1: Генерация ответов
-add_executable(1_generate_replies tools/1_generate_replies.cpp)
-target_link_libraries(1_generate_replies radar_sim)
-
-# Этап 2: Формирование плотов (отдельно)
-add_executable(2_form_plots tools/2_form_plots.cpp)
-target_link_libraries(2_form_plots radar_sim)
-
-# Этап 3: Трековая обработка (отдельно)
-add_executable(3_track_processing tools/3_track_processing.cpp)
-target_link_libraries(3_track_processing radar_sim)
-
-# Этап 2+3: Объединённая обработка (формирование плотов + трековая обработка)
-add_executable(2_3_combined tools/2_3_combined.cpp)
-target_link_libraries(2_3_combined radar_sim)
-
-# Этап 4: Плеер с отображением
-add_executable(4_radar_player tools/4_radar_player.cpp)
-target_link_libraries(4_radar_player 
-    radar_sim 
-    ${SDL2_LIBRARIES} 
-    ${SDL2_TTF_LIBRARIES}
-)
-
-# Тестовая утилита для парсера
-add_executable(test_config_parser tools/test_config_parser.cpp)
-target_link_libraries(test_config_parser radar_sim)
