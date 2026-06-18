@@ -47,6 +47,9 @@ protected:
     RadarConfig config_;
     bool debug_{false};
     void log(const std::string& msg) const;
+    
+    // Константа для UVD порога
+    static constexpr uint8_t threshold_for_uvd_ = 50;
 };
 
 // ============================================================================

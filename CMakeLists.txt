@@ -11,6 +11,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(BUILD_TOOLS "Build tools" ON)
 option(BUILD_TESTS "Build tests" OFF)
 option(BUILD_EXAMPLES "Build examples" OFF)
+option(ENABLE_VERBOSE_LOGGING "Enable verbose debug logging" OFF)
 
 # Устанавливаем режим сборки по умолчанию
 if(NOT CMAKE_BUILD_TYPE)
@@ -31,6 +32,11 @@ include_directories(${EIGEN3_INCLUDE_DIR})
 message(STATUS "Using Eigen3 from: ${EIGEN3_INCLUDE_DIR}")
 message(STATUS "Using SDL2: ${SDL2_LIBRARIES}")
 message(STATUS "Using SDL2_ttf: ${SDL2_TTF_LIBRARIES}")
+
+# Передаем опции в поддиректории
+add_compile_definitions(
+    $<$<BOOL:${ENABLE_VERBOSE_LOGGING}>:ENABLE_VERBOSE_LOGGING>
+)
 
 # Подключаем поддиректории
 add_subdirectory(src)

@@ -1,22 +1,57 @@
-# VRL-Radar/tools/CMakeLists.txt
+# tools/CMakeLists.txt
 
-# Этап 1: Генерация ответов
-add_executable(1_generate_replies 1_generate_replies.cpp)
-target_link_libraries(1_generate_replies vrl_radar)
+# Получаем опции
+get_property(ENABLE_VERBOSE_LOGGING GLOBAL PROPERTY ENABLE_VERBOSE_LOGGING)
 
-# Этап 2+3: Объединённая обработка
-add_executable(2_3_combined 2_3_combined.cpp)
-target_link_libraries(2_3_combined vrl_radar)
+# Утилита 1: Генерация ответов
+add_executable(1_generate_replies
+    1_generate_replies.cpp
+)
 
-# Этап 4: Плеер с отображением
-add_executable(4_radar_player 4_radar_player.cpp)
-target_link_libraries(4_radar_player 
+target_link_libraries(1_generate_replies
     vrl_radar
     ${SDL2_LIBRARIES}
     ${SDL2_TTF_LIBRARIES}
 )
 
-# Устанавливаем утилиты
-install(TARGETS 1_generate_replies 2_3_combined 4_radar_player
-    RUNTIME DESTINATION bin
+target_compile_definitions(1_generate_replies
+    PRIVATE
+        $<$<BOOL:${ENABLE_VERBOSE_LOGGING}>:ENABLE_VERBOSE_LOGGING>
+)
+
+# Утилита 2-3: Комбинированная обработка
+add_executable(2_3_combined
+    2_3_combined.cpp
+)
+
+target_link_libraries(2_3_combined
+    vrl_radar
+    ${SDL2_LIBRARIES}
+    ${SDL2_TTF_LIBRARIES}
+)
+
+target_compile_definitions(2_3_combined
+    PRIVATE
+        $<$<BOOL:${ENABLE_VERBOSE_LOGGING}>:ENABLE_VERBOSE_LOGGING>
+)
+
+# Утилита 4: Радарный плеер
+add_executable(4_radar_player
+    4_radar_player.cpp
+)
+
+target_link_libraries(4_radar_player
+    ${SDL2_LIBRARIES}
+    ${SDL2_TTF_LIBRARIES}
+)
+
+target_compile_definitions(4_radar_player
+    PRIVATE
+        $<$<BOOL:${ENABLE_VERBOSE_LOGGING}>:ENABLE_VERBOSE_LOGGING>
+)
+
+# Устанавливаем выходные файлы в директорию tools
+set_target_properties(1_generate_replies 2_3_combined 4_radar_player
+    PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tools"
 )

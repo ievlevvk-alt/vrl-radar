@@ -445,3 +445,456 @@ cmake .. -DCMAKE_BUILD_TYPE=Release -DENABLE_VERBOSE_LOGGING=ON
 ./tools/4_radar_player replies.txt plots_combined.txt tracks_combined.txt
 
 ====================
+
+Критические проблемы
+1. Дублирование реализации
+
+Файлы garbling_solver_iterative.cpp и garbling_solver_threshold.cpp содержат одинаковый код (оба содержат реализацию IterativeSubtractionSolver). Это приведет к ошибкам линковки.
+
+Решение:
+
+    Удалить garbling_solver_threshold.cpp
+
+    Переименовать garbling_solver_iterative.cpp → garbling_solver.cpp
+
+    Объединить обе реализации в одном файле
+
+cpp
+
+// garbling_solver.cpp должно содержать:
+// 1. ThresholdGarblingSolver
+// 2. IterativeSubtractionSolver
+
+2. Отсутствие реализации UVD в garbling_solver
+
+Методы separate_uvd в обоих солверах имеют заглушки (TODO: Implement).
+
+Решение: Реализовать полную обработку UVD:
+cpp
+
+SeparationResult<UVDReply> ThresholdGarblingSolver::separate_uvd(
+    const std::vector<UVDReply>& mixture,
+    const std::vector<uint32_t>& expected_data) {
+    
+    // Аналогично RBS, но для 20-битных данных
+    std::array<uint8_t, UVDReply::ETHER_POSITIONS> total{};
+    // ... сложение и обнаружение бит
+}
+
+3. Отсутствие валидации range_bin в ClusterProcessor
+
+В process_rbs_group используется config_.range_bin_rbs, но нет проверки, что группа действительно принадлежит этому типу.
+
+Решение:
+cpp
+
+std::optional<TargetReport> ClusterProcessor::process_rbs_group(const RangeGroup& group) {
+    // Проверка, что группа содержит RBS
+    if (group.rbs_replies.empty()) return std::nullopt;
+    
+    // Проверка, что группа не содержит UVD (иначе это смешанная группа)
+    if (!group.uvd_replies.empty()) {
+        VRL_LOG_WARN(modules::CLUSTER, "Mixed RBS/UVD group detected");
+        // Можно обработать отдельно
+    }
+    // ... остальной код
+}
+
+Важные улучшения
+4. Сборка - неоптимальные include директории
+
+Проблема: include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include) в корневом CMakeLists.txt делает все заголовки глобально доступными.
+
+Решение: Использовать target_include_directories:
+cmake
+
+# В src/CMakeLists.txt
+target_include_directories(vrl_radar
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/../include
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+target_include_directories(vrl_radar SYSTEM PUBLIC
+    ${EIGEN3_INCLUDE_DIR}
+)
+
+5. Отсутствие обработки ошибок в ConfigParser
+
+Проблема: При парсинге чисел нет проверки на корректность формата.
+
+Решение:
+cpp
+
+template<typename T>
+static std::optional<T> safe_stod(const std::string& str) {
+    if (str.empty()) return std::nullopt;
+    
+    std::string cleaned = trim(str);
+    if (cleaned.empty()) return std::nullopt;
+    
+    // Проверка, что строка содержит только допустимые символы
+    bool has_digit = false;
+    for (char c : cleaned) {
+        if (std::isdigit(c) || c == '.' || c == '-' || c == '+') {
+            if (std::isdigit(c)) has_digit = true;
+        } else if (c != 'e' && c != 'E') {
+            return std::nullopt;
+        }
+    }
+    if (!has_digit) return std::nullopt;
+    
+    try {
+        // ... существующий код
+    } catch (const std::exception& e) {
+        VRL_LOG_ERROR(modules::CONFIG, "Failed to parse value: " + str);
+        return std::nullopt;
+    }
+}
+
+6. Утечка памяти в ReplySimulator
+
+Проблема: Нет управления ресурсами при генерации большого количества ответов.
+
+Решение: Добавить возможность ограничения памяти:
+cpp
+
+class ReplySimulator {
+public:
+    // Добавить лимит на количество хранимых ответов
+    void set_max_replies(size_t max) { max_replies_ = max; }
+    
+    // Использовать move-семантику
+    OverlapResult mix_two_rbs(RBSReply&& r1, RBSReply&& r2, ...) {
+        // ... обработка без копирования
+    }
+};
+
+7. Медленная кластеризация
+
+Проблема: OnlineClusterer::check_completed_clusters выполняется линейно по всем кластерам.
+
+Решение: Использовать spatial index:
+cpp
+
+class OnlineClusterer {
+private:
+    // Использовать std::map для быстрого поиска по диапазону
+    std::map<uint16_t, std::vector<Cluster*>> azimuth_index_;
+    
+    void update_index(Cluster& cluster) {
+        // Индексация по азимуту
+        uint16_t az_bucket = cluster.min_azimuth / azimuth_threshold_bins_;
+        azimuth_index_[az_bucket].push_back(&cluster);
+    }
+};
+
+Улучшения производительности
+8. Копирование больших структур
+
+Проблема: Повсеместное копирование std::array<uint8_t, 80> в UVDReply.
+
+Решение: Использовать const ссылки и move-семантику:
+cpp
+
+// Вместо
+void add_reply(const Reply& r) { replies.push_back(r); }
+
+// Использовать
+void add_reply(Reply&& r) { replies.push_back(std::move(r)); }
+void add_reply(const Reply& r) { replies.push_back(r); } // fallback
+
+9. Замена std::map на std::unordered_map
+
+Проблема: В местах с частым доступом по ключу используется std::map (O(log n)).
+
+Решение:
+cpp
+
+// cluster.cpp
+// std::map<uint16_t, RangeGroup> range_map;
+// → 
+std::unordered_map<uint16_t, RangeGroup> range_map;
+range_map.reserve(100); // если ожидаем ~100 групп
+
+10. Оптимизация логгера
+
+Проблема: Логгер использует блокировки для каждой записи.
+
+Решение: Использовать потокобезопасный буфер:
+cpp
+
+class Logger {
+private:
+    class AsyncLogger {
+        std::queue<std::string> buffer_;
+        std::thread worker_;
+        std::atomic<bool> running_{true};
+        // ... асинхронная запись
+    };
+    std::unique_ptr<AsyncLogger> async_logger_;
+};
+
+Функциональные улучшения
+11. Добавить валидацию конфигурации
+cpp
+
+class ConfigValidator {
+public:
+    static bool validate(const SystemConfig& config, std::string& error) {
+        // Проверка наличия целей
+        if (!config.has_targets()) {
+            error = "No targets defined";
+            return false;
+        }
+        
+        // Проверка корректности параметров
+        if (config.radar.range_bin_rbs <= 0) {
+            error = "Invalid range_bin_rbs";
+            return false;
+        }
+        
+        // Проверка уникальности кодов
+        std::set<uint16_t> codes;
+        for (const auto& t : config.rbs_targets) {
+            if (codes.count(t.rbs_code_octal)) {
+                error = "Duplicate RBS code: " + std::to_string(t.rbs_code_octal);
+                return false;
+            }
+            codes.insert(t.rbs_code_octal);
+        }
+        
+        return true;
+    }
+};
+
+12. Добавить сохранение состояния трекера
+cpp
+
+class TrackManager {
+public:
+    // Сериализация
+    bool save_state(const std::string& filename) const {
+        std::ofstream file(filename, std::ios::binary);
+        // Записать количество треков, их состояния, фильтры Калмана
+        return file.good();
+    }
+    
+    // Десериализация
+    bool load_state(const std::string& filename) {
+        std::ifstream file(filename, std::ios::binary);
+        // Восстановить состояние
+        return file.good();
+    }
+};
+
+13. Добавить метрики производительности
+cpp
+
+class PerformanceMetrics {
+public:
+    void record_processing_time(const std::string& stage, double seconds);
+    void record_reply_count(const std::string& type, size_t count);
+    void record_track_count(size_t count);
+    
+    void print_report() const {
+        VRL_LOG_INFO(modules::MAIN, "=== Performance Report ===");
+        // Вывод статистики
+    }
+    
+private:
+    std::map<std::string, std::vector<double>> processing_times_;
+    size_t total_replies_ = 0;
+    size_t total_plots_ = 0;
+    size_t total_tracks_ = 0;
+};
+
+Исправление багов
+14. Потенциальное переполнение в azimuth_diff
+cpp
+
+// В cluster.cpp
+int16_t gap = current_azimuth - last_reply_azimuth;
+if (gap < 0) gap += 4096;
+// Проблема: gap может выйти за пределы int16_t
+
+Исправление:
+cpp
+
+int gap = static_cast<int>(current_azimuth) - static_cast<int>(last_reply_azimuth);
+if (gap < 0) gap += 4096;
+return gap <= max_gap_azimuth; // gap теперь int
+
+15. Деление на ноль в ReplyProcessor
+cpp
+
+double ReplyProcessor::estimate_snr(const RBSReply& reply) {
+    // ...
+    double avg_signal = signal / signal_count; // signal_count может быть 0
+    double avg_noise = noise / noise_count;    // noise_count может быть 0
+    // ...
+}
+
+Исправление:
+cpp
+
+double ReplyProcessor::estimate_snr(const RBSReply& reply) {
+    // ...
+    if (signal_count == 0 || noise_count == 0) return 0.0;
+    double avg_signal = signal / signal_count;
+    double avg_noise = noise / noise_count;
+    if (avg_noise == 0) return 30.0;
+    // ...
+}
+
+Архитектурные улучшения
+16. Паттерн Observer для уведомлений
+cpp
+
+// Трекер уведомляет о новых треках
+class TrackObserver {
+public:
+    virtual void on_track_created(const Track& track) {}
+    virtual void on_track_updated(const Track& track) {}
+    virtual void on_track_dropped(uint64_t id) {}
+};
+
+class TrackManager {
+    std::vector<TrackObserver*> observers_;
+    
+    void notify_track_created(const Track& track) {
+        for (auto* obs : observers_) {
+            obs->on_track_created(track);
+        }
+    }
+};
+
+17. Фабрика для GarblingSolver
+cpp
+
+enum class SolverType {
+    THRESHOLD,
+    ITERATIVE,
+    ML_BASED
+};
+
+class GarblingSolverFactory {
+public:
+    static std::unique_ptr<GarblingSolver> create(SolverType type, const RadarConfig& config) {
+        switch (type) {
+            case SolverType::THRESHOLD:
+                return std::make_unique<ThresholdGarblingSolver>(config);
+            case SolverType::ITERATIVE:
+                return std::make_unique<IterativeSubtractionSolver>(config);
+            default:
+                return std::make_unique<ThresholdGarblingSolver>(config);
+        }
+    }
+};
+
+Тестирование
+18. Добавить unit-тесты
+cmake
+
+# tests/CMakeLists.txt
+add_executable(test_radar
+    test_config.cpp
+    test_cluster.cpp
+    test_kalman.cpp
+)
+
+target_link_libraries(test_radar
+    vrl_radar
+    GTest::GTest
+)
+
+add_test(NAME test_radar COMMAND test_radar)
+
+cpp
+
+// tests/test_config.cpp
+TEST(ConfigParserTest, ParseFloat) {
+    ConfigParser parser;
+    parser.load("test.conf");
+    auto val = parser.get<double>("range_bin_rbs");
+    EXPECT_TRUE(val.has_value());
+    EXPECT_DOUBLE_EQ(*val, 30.0);
+}
+
+Документация
+19. Добавить Doxygen документацию
+cpp
+
+/**
+ * @brief Обрабатывает кластер ответов и формирует целевые отчеты
+ * 
+ * @param cluster Кластер, содержащий группу связанных ответов
+ * @return std::vector<TargetReport> Список обнаруженных целей
+ * 
+ * @note Кластер должен содержать как минимум min_hits_ ответов
+ * @warning При включенном split_garbled_ возможно разделение перекрывающихся ответов
+ */
+std::vector<TargetReport> process_cluster(const TargetCluster& cluster);
+
+20. Добавить README с примерами
+markdown
+
+# VRL-Radar
+
+## Быстрый старт
+
+```bash
+# Сборка
+mkdir build && cd build
+cmake .. -DBUILD_TOOLS=ON
+make -j4
+
+# Генерация данных
+./tools/1_generate_replies ../config/radar.conf 300 replies.txt
+
+# Обработка
+./tools/2_3_combined ../config/radar.conf replies.txt tracks.txt
+
+# Визуализация
+./tools/4_radar_player replies.txt plots.txt tracks.txt
+
+Формат данных
+replies.txt
+Поле	Тип	Описание
+time_sec	double	Время в секундах
+azimuth	uint16_t	Азимут в дискретах (0-4095)
+range	uint16_t	Дальность в дискретах
+type	string	Тип ответа (RBS_A, RBS_C, UVD_DATA, UVD_ALT)
+text
+
+
+---
+
+## Приоритет исправлений
+
+| Приоритет | Задача | Сложность |
+|-----------|--------|-----------|
+| 🔴 Критический | Удалить дублирующиеся файлы garbling_solver | Низкая |
+| 🔴 Критический | Реализовать UVD в garbling_solver | Средняя |
+| 🟡 Высокий | Исправить деление на ноль | Низкая |
+| 🟡 Высокий | Исправить переполнение azimuth_diff | Низкая |
+| 🟡 Высокий | Валидация конфигурации | Средняя |
+| 🟢 Средний | Spatial index для кластеризации | Высокая |
+| 🟢 Средний | Move-семантика для больших структур | Средняя |
+| 🟢 Средний | Unit-тесты | Средняя |
+| 🔵 Низкий | Doxygen документация | Низкая |
+| 🔵 Низкий | Асинхронный логгер | Высокая |
+
+---
+
+## Итоговая оценка
+
+**Общая оценка проекта: 7.5/10**
+
+Проект имеет хорошую архитектуру и работает как задумано. Основные проблемы связаны с дублированием кода и неполной реализацией некоторых компонентов. После исправления критических ошибок и добавления тестов проект может быть оценен на 9/10.
+
+
+
+==============
+

@@ -1,56 +1,44 @@
-# VRL-Radar/src/CMakeLists.txt
+# src/CMakeLists.txt
 
-# Основная библиотека
-add_library(vrl_radar
-    # Core
-    ${CMAKE_CURRENT_SOURCE_DIR}/core/config.cpp
-    
-    # Processing
-    ${CMAKE_CURRENT_SOURCE_DIR}/processing/tracker.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/processing/kalman_filter.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/processing/cluster.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/processing/garbling_solver.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/processing/garbling_solver_threshold.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/processing/garbling_solver_iterative.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/processing/reply_processor.cpp
-    
-    # Simulation
-    ${CMAKE_CURRENT_SOURCE_DIR}/simulation/simulator.cpp
-    
-    # Utils
-    ${CMAKE_CURRENT_SOURCE_DIR}/utils/utils.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/utils/logger.cpp
-)
-
-# Настройка include директорий для библиотеки
-target_include_directories(vrl_radar
-    PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../include>
-        $<INSTALL_INTERFACE:include>
-    PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}
+# Библиотека VRL Radar
+add_library(vrl_radar STATIC
+    core/config.cpp
+    processing/cluster.cpp
+    processing/garbling_solver.cpp
+    processing/kalman_filter.cpp
+    processing/reply_processor.cpp
+    processing/tracker.cpp
+    simulation/simulator.cpp
+    utils/logger.cpp
+    utils/utils.cpp
 )
 
 # Подключаем зависимости
 target_link_libraries(vrl_radar
+    ${SDL2_LIBRARIES}
+    ${SDL2_TTF_LIBRARIES}
+    ${EIGEN3_LIBRARIES}
+)
+
+# Устанавливаем include директории
+target_include_directories(vrl_radar
     PUBLIC
-        ${EIGEN3_LIBRARIES}
+        ${CMAKE_CURRENT_SOURCE_DIR}/../include
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
-# Опция для включения детального логирования
-option(ENABLE_VERBOSE_LOGGING "Enable verbose logging" OFF)
-if(ENABLE_VERBOSE_LOGGING)
-    target_compile_definitions(vrl_radar PUBLIC VRL_VERBOSE_LOGGING)
-endif()
-
-# Устанавливаем библиотеку
-install(TARGETS vrl_radar
-    EXPORT VRLRadarTargets
-    LIBRARY DESTINATION lib
-    ARCHIVE DESTINATION lib
-    RUNTIME DESTINATION bin
+target_include_directories(vrl_radar SYSTEM PUBLIC
+    ${EIGEN3_INCLUDE_DIR}
 )
 
-install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../include/vrl
-    DESTINATION include
+# Добавляем опции компиляции
+target_compile_definitions(vrl_radar
+    PUBLIC
+        $<$<BOOL:${ENABLE_VERBOSE_LOGGING}>:ENABLE_VERBOSE_LOGGING>
+    PRIVATE
+        $<$<CONFIG:Debug>:DEBUG>
 )
+
+# Передаем опции в инструменты
+set_property(GLOBAL PROPERTY ENABLE_VERBOSE_LOGGING ${ENABLE_VERBOSE_LOGGING})

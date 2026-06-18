@@ -137,11 +137,20 @@ private:
 // МАКРОСЫ ДЛЯ УДОБНОГО ЛОГИРОВАНИЯ
 // ============================================================================
 
+// Основные макросы логирования
 #define VRL_LOG_TRACE(module, msg) \
-    vrl::radar::utils::Logger::instance().log(vrl::radar::utils::LogLevel::TRACE, module, msg)
+    do { \
+        if (true) { \
+            vrl::radar::utils::Logger::instance().log(vrl::radar::utils::LogLevel::TRACE, module, msg); \
+        } \
+    } while(0)
 
 #define VRL_LOG_DEBUG(module, msg) \
-    vrl::radar::utils::Logger::instance().log(vrl::radar::utils::LogLevel::DEBUG, module, msg)
+    do { \
+        if (true) { \
+            vrl::radar::utils::Logger::instance().log(vrl::radar::utils::LogLevel::DEBUG, module, msg); \
+        } \
+    } while(0)
 
 #define VRL_LOG_INFO(module, msg) \
     vrl::radar::utils::Logger::instance().log(vrl::radar::utils::LogLevel::INFO, module, msg)
@@ -154,6 +163,21 @@ private:
 
 #define VRL_LOG_FATAL(module, msg) \
     vrl::radar::utils::Logger::instance().log(vrl::radar::utils::LogLevel::FATAL, module, msg)
+
+// Вербозное логирование - включается только если определена ENABLE_VERBOSE_LOGGING
+#ifdef ENABLE_VERBOSE_LOGGING
+    #define VRL_LOG_VERBOSE(module, msg) \
+        vrl::radar::utils::Logger::instance().log(vrl::radar::utils::LogLevel::DEBUG, module, msg)
+    #define VRL_LOG_VERBOSE_STREAM(module) \
+        vrl::radar::utils::Logger::LogStream(vrl::radar::utils::Logger::instance(), \
+                                             vrl::radar::utils::LogLevel::DEBUG, module)
+#else
+    #define VRL_LOG_VERBOSE(module, msg) ((void)0)
+    #define VRL_LOG_VERBOSE_STREAM(module) \
+        std::ostringstream().flush(), vrl::radar::utils::Logger::LogStream( \
+            vrl::radar::utils::Logger::instance(), \
+            vrl::radar::utils::LogLevel::OFF, module)
+#endif
 
 #define VRL_LOG_IF(level, module, condition, msg) \
     if (condition) { \
