@@ -79,17 +79,15 @@ std::string format_code(uint32_t code, const std::string& type) {
 
 void write_plots_to_file(const std::vector<PlotData>& plots, std::ofstream& out_plots) {
     if (plots.empty()) {
-        std::cout << "DEBUG: plots empty, skipping write" << std::endl;
+        VRL_LOG_TRACE(modules::PROCESSING, "No plots to write");
         return;
     }
     if (!out_plots.is_open()) {
-        std::cout << "DEBUG: out_plots is NOT open" << std::endl;
+        VRL_LOG_ERROR(modules::PROCESSING, "Plots file is not open");
         return;
     }
     
-    std::cout << "DEBUG: Writing " << plots.size() << " plots to file" << std::endl;
-
-    if (plots.empty() || !out_plots.is_open()) return;
+    VRL_LOG_DEBUG(modules::PROCESSING, "Writing " + std::to_string(plots.size()) + " plots to file");
     
     for (const auto& plot : plots) {
         out_plots << std::fixed << std::setprecision(6) << plot.time_sec << ","
@@ -124,7 +122,10 @@ bool parse_reply_line(const std::string& line, Reply& reply) {
     while (std::getline(ss_line, part, ',')) {
         parts.push_back(part);
     }
-    if (parts.size() < 10) return false;
+    if (parts.size() < 10) {
+        VRL_LOG_TRACE(modules::PROCESSING, "Invalid reply line: " + line);
+        return false;
+    }
     
     try {
         reply.time_sec = std::stod(parts[0]);
@@ -144,7 +145,8 @@ bool parse_reply_line(const std::string& line, Reply& reply) {
         reply.is_valid = (parts[8] == "1");
         reply.is_garble = (parts[9] == "1");
         return true;
-    } catch (const std::exception&) {
+    } catch (const std::exception& e) {
+        VRL_LOG_WARN(modules::PROCESSING, "Failed to parse reply line: " + std::string(e.what()));
         return false;
     }
 }
@@ -163,17 +165,22 @@ public:
         , range_threshold_bins_(range_threshold_bins)
         , azimuth_threshold_bins_(azimuth_threshold_bins)
         , completion_gap_bins_(completion_gap_bins)
-        , current_azimuth_(0) {}
+        , current_azimuth_(0) {
+        VRL_LOG_DEBUG(modules::CLUSTER, "OnlineClusterer created: range_bin=" + 
+                      std::to_string(range_bin_m) + "m, range_threshold=" + 
+                      std::to_string(range_threshold_bins) + ", az_threshold=" + 
+                      std::to_string(azimuth_threshold_bins) + ", gap=" + 
+                      std::to_string(completion_gap_bins));
+    }
     
     void update_azimuth(uint16_t azimuth) {
         current_azimuth_ = azimuth;
     }
     
     void add_reply(const Reply& reply) {
-        std::cout << "[ADD_REPLY] type=" << reply.type 
-                << ", az=" << reply.azimuth 
-                << ", range=" << reply.range 
-                << ", active_clusters=" << active_clusters_.size() << std::endl;
+        VRL_LOG_TRACE(modules::CLUSTER, "Adding reply: type=" + reply.type + 
+                      ", az=" + std::to_string(reply.azimuth) + 
+                      ", range=" + std::to_string(reply.range));
         
         double az_rad = (reply.azimuth * AZIMUTH_BIN_DEG) * M_PI / 180.0;
         double range_m = reply.range * range_bin_m_;
@@ -187,6 +194,8 @@ public:
             if (cluster.is_near(r, range_threshold_bins_, azimuth_threshold_bins_)) {
                 cluster.add_reply(r);
                 added = true;
+                VRL_LOG_TRACE(modules::CLUSTER, "Added to existing cluster (" + 
+                              std::to_string(cluster.replies.size()) + " replies)");
                 break;
             }
         }
@@ -195,38 +204,35 @@ public:
             Cluster new_cluster;
             new_cluster.add_reply(r);
             active_clusters_.push_back(new_cluster);
+            VRL_LOG_TRACE(modules::CLUSTER, "Created new cluster (" + 
+                          std::to_string(active_clusters_.size()) + " total)");
         }
         
         current_azimuth_ = reply.azimuth;
     }
 
-
-
     void process_sector(uint16_t azimuth) {
         current_azimuth_ = azimuth;
         check_completed_clusters();
         
-        // ОТЛАДКА
-        std::cout << "[SECTOR] azimuth=" << azimuth 
-                << ", active_clusters=" << active_clusters_.size() 
-                << ", completed_plots=" << completed_plots_.size() << std::endl;
+        VRL_LOG_TRACE(modules::CLUSTER, "Processed sector at azimuth " + 
+                      std::to_string(azimuth) + ", active clusters=" + 
+                      std::to_string(active_clusters_.size()));
     }
-
 
     std::vector<PlotData> get_completed_plots() {
         std::vector<PlotData> result;
         
-        // 1. Сначала забираем уже готовые плоты из completed_plots_
         result = std::move(completed_plots_);
         completed_plots_.clear();
         
-        // 2. Проверяем активные кластеры и создаём новые плоты
         auto it = active_clusters_.begin();
         while (it != active_clusters_.end()) {
             if (it->is_completed(current_azimuth_, completion_gap_bins_)) {
                 if (it->replies.size() >= 2) {
                     PlotData plot = create_plot_from_cluster(*it);
                     result.push_back(plot);
+                    VRL_LOG_TRACE(modules::CLUSTER, "Completed cluster -> plot created");
                 }
                 it = active_clusters_.erase(it);
             } else {
@@ -234,16 +240,21 @@ public:
             }
         }
         
-        std::cout << "[GET_PLOTS] Returning " << result.size() << " plots" << std::endl;
+        if (!result.empty()) {
+            VRL_LOG_DEBUG(modules::CLUSTER, "Returning " + std::to_string(result.size()) + " plots");
+        }
         return result;
     }
 
-
     void finish_all() {
+        VRL_LOG_DEBUG(modules::CLUSTER, "Finishing all clusters (" + 
+                      std::to_string(active_clusters_.size()) + " active)");
+        
         for (auto& cluster : active_clusters_) {
             if (cluster.replies.size() >= 2) {
                 PlotData plot = create_plot_from_cluster(cluster);
                 completed_plots_.push_back(plot);
+                VRL_LOG_TRACE(modules::CLUSTER, "Finalized cluster -> plot created");
             }
         }
         active_clusters_.clear();
@@ -279,11 +290,6 @@ private:
         int best_altitude_count{0};
         
         void add_reply(const Reply& r) {
-            // ОТЛАДКА: показываем, что ответ добавляется
-            std::cout << "[CLUSTER_ADD] type=" << r.type 
-                    << ", az=" << r.azimuth 
-                    << ", range=" << r.range << std::endl;
-            
             if (replies.empty()) {
                 first_time = r.time_sec;
                 center_x = r.x;
@@ -328,7 +334,6 @@ private:
             }
         }
 
-
         bool is_near(const Reply& r, int range_threshold_bins, int azimuth_threshold_bins) const {
             if (replies.empty()) return true;
             
@@ -356,12 +361,10 @@ private:
         auto it = active_clusters_.begin();
         while (it != active_clusters_.end()) {
             if (it->is_completed(current_azimuth_, completion_gap_bins_)) {
-                std::cout << "[CHECK] Cluster completed! replies=" << it->replies.size() << std::endl;
                 if (it->replies.size() >= 2) {
                     PlotData plot = create_plot_from_cluster(*it);
                     completed_plots_.push_back(plot);
-                    std::cout << "[CHECK] Plot created: type=" << plot.type 
-                            << ", code=" << plot.code_data << std::endl;
+                    VRL_LOG_TRACE(modules::CLUSTER, "Cluster completed, plot created");
                 }
                 it = active_clusters_.erase(it);
             } else {
@@ -369,7 +372,6 @@ private:
             }
         }
     }
-
 
     PlotData create_plot_from_cluster(const Cluster& cluster) {
         PlotData plot;
@@ -476,10 +478,10 @@ void process_plot_in_tracker(const PlotData& plot,
                              uint64_t id_offset,
                              double revolution_time) {
     
-    std::cout << "[TRACKER] Processing plot: type=" << type 
-              << ", time=" << plot.time_sec 
-              << ", code=" << plot.code_data << std::endl;
-
+    VRL_LOG_TRACE(modules::TRACKER, "Processing plot: type=" + type + 
+                  ", time=" + std::to_string(plot.time_sec) + 
+                  ", code=" + std::to_string(plot.code_data));
+    
     TargetReport report;
     report.x = plot.x_km * 1000.0;
     report.y = plot.y_km * 1000.0;
@@ -501,22 +503,15 @@ void process_plot_in_tracker(const PlotData& plot,
     }
     
     tracker.process_targets({report}, revolution);
-    std::cout << "[TRACKER] process_targets done" << std::endl;
     
     auto tracks = tracker.get_active_tracks();
-    std::cout << "[TRACKER] Got " << tracks.size() << " active tracks" << std::endl;
-
+    
+    int tracks_written = 0;
     for (const auto& track : tracks) {
-        std::cout << "[TRACKER] Track id=" << track.id 
-                  << ", hit_count=" << track.hit_count 
-                  << ", state=" << static_cast<int>(track.state) << std::endl;
-
         auto it = last_hit.find(track.id);
         bool is_new_or_updated = (it == last_hit.end() || it->second != track.hit_count);
-        std::cout << "[TRACKER] is_new_or_updated=" << is_new_or_updated << std::endl;
 
         if (is_new_or_updated) {
-            std::cout << "[TRACKER] WRITING TRACK TO FILE!" << std::endl;
             double speed_km_s = track.ground_speed / 1000.0;
             double course_deg = track.course_deg;
             
@@ -537,10 +532,8 @@ void process_plot_in_tracker(const PlotData& plot,
             }
             
             uint64_t display_id = track.id + id_offset;
-            
             uint32_t code = (type == "RBS") ? track.mode3a_code : track.uvd_data20;
             
-
             out_tracks << std::fixed << std::setprecision(3) << plot.time_sec << ","
                     << display_id << ","
                     << std::setprecision(2) << track.x / 1000.0 << ","
@@ -555,13 +548,15 @@ void process_plot_in_tracker(const PlotData& plot,
                     << static_cast<int>(track.state) << ","
                     << type << ","
                     << (track.code_reliable ? "1" : "0") << ","
-                    << (track.altitude_reliable ? "1" : "0") << "\n";            
-
+                    << (track.altitude_reliable ? "1" : "0") << "\n";
 
             last_hit[track.id] = track.hit_count;
-        } else {
-            std::cout << "[TRACKER] SKIPPING (already written)" << std::endl;
+            tracks_written++;
         }
+    }
+    
+    if (tracks_written > 0) {
+        VRL_LOG_TRACE(modules::TRACKER, "Wrote " + std::to_string(tracks_written) + " tracks");
     }
 }
 
@@ -590,12 +585,13 @@ struct ProcessingConfig {
 };
 
 ProcessingConfig load_config(const std::string& config_file) {
+    VRL_LOG_DEBUG(modules::CONFIG, "Loading config from: " + config_file);
+    
     ProcessingConfig config;
     
     ConfigParser parser;
     if (!parser.load(config_file)) {
-        std::cerr << "Warning: Cannot load config file " << config_file 
-                  << ", using defaults\n";
+        VRL_LOG_WARN(modules::CONFIG, "Cannot load config file " + config_file + ", using defaults");
         return config;
     }
     
@@ -614,18 +610,20 @@ ProcessingConfig load_config(const std::string& config_file) {
     
     config.plots_file = parser.get_or_default<std::string>("plots_output_file", "");
     
-    std::cout << "Loaded config from " << config_file << "\n";
-    std::cout << "  Range threshold bins: " << config.range_threshold_bins << "\n";
-    std::cout << "  Azimuth threshold bins: " << config.azimuth_threshold_bins << "\n";
-    std::cout << "  Completion gap bins: " << config.completion_gap_bins << "\n";
-    std::cout << "  Max gate distance: " << config.max_gate_distance_km << " km\n";
-    std::cout << "  Max gate azimuth: " << config.max_gate_azimuth_deg << "°\n";
-    std::cout << "  Min hits to confirm: " << config.min_hits_to_confirm << "\n";
-    std::cout << "  Max coast count: " << config.max_coast_count << "\n";
-    std::cout << "  Process noise: " << config.process_noise << "\n";
-    std::cout << "  Measurement noise: " << config.measurement_noise << "\n";
+    VRL_LOG_INFO(modules::CONFIG, "Configuration loaded successfully");
+    VRL_LOG_DEBUG(modules::CONFIG, "  Range threshold bins: " + std::to_string(config.range_threshold_bins));
+    VRL_LOG_DEBUG(modules::CONFIG, "  Azimuth threshold bins: " + std::to_string(config.azimuth_threshold_bins));
+    VRL_LOG_DEBUG(modules::CONFIG, "  Completion gap bins: " + std::to_string(config.completion_gap_bins));
+    VRL_LOG_DEBUG(modules::CONFIG, "  Max gate distance: " + std::to_string(config.max_gate_distance_km) + " km");
+    VRL_LOG_DEBUG(modules::CONFIG, "  Max gate azimuth: " + std::to_string(config.max_gate_azimuth_deg) + "°");
+    VRL_LOG_DEBUG(modules::CONFIG, "  Min hits to confirm: " + std::to_string(config.min_hits_to_confirm));
+    VRL_LOG_DEBUG(modules::CONFIG, "  Max coast count: " + std::to_string(config.max_coast_count));
+    VRL_LOG_DEBUG(modules::CONFIG, "  Process noise: " + std::to_string(config.process_noise));
+    VRL_LOG_DEBUG(modules::CONFIG, "  Measurement noise: " + std::to_string(config.measurement_noise));
+    VRL_LOG_DEBUG(modules::CONFIG, "  Revolution time: " + std::to_string(config.revolution_time));
+    VRL_LOG_DEBUG(modules::CONFIG, "  Debug mode: " + std::string(config.debug_mode ? "true" : "false"));
     if (!config.plots_file.empty()) {
-        std::cout << "  Plots output: " << config.plots_file << "\n";
+        VRL_LOG_DEBUG(modules::CONFIG, "  Plots output: " + config.plots_file);
     }
     
     return config;
@@ -638,7 +636,7 @@ ProcessingConfig load_config(const std::string& config_file) {
 int main(int argc, char* argv[]) {
     // Настройка логгера
     auto& logger = Logger::instance();
-    logger.set_level(LogLevel::INFO);
+    logger.set_level(LogLevel::DEBUG);
     logger.set_console_output(true);
     logger.set_file_output("radar_processing.log");
     
@@ -660,6 +658,8 @@ int main(int argc, char* argv[]) {
     config.input_file = input_file;
     config.tracks_file = tracks_file;
     
+    VRL_LOG_INFO(modules::MAIN, "Initializing tracker...");
+    
     TrackerConfig tracker_config;
     tracker_config.min_hits_to_confirm = config.min_hits_to_confirm;
     tracker_config.max_coast_count = config.max_coast_count;
@@ -673,14 +673,16 @@ int main(int argc, char* argv[]) {
     
     std::ifstream in(config.input_file);
     if (!in.is_open()) {
-        std::cerr << "Error: Cannot open " << config.input_file << std::endl;
+        VRL_LOG_ERROR(modules::MAIN, "Cannot open " + config.input_file);
         return 1;
     }
+    VRL_LOG_DEBUG(modules::MAIN, "Input file opened successfully");
     
     std::ofstream out_tracks(config.tracks_file);
     out_tracks << "# Tracks (from combined processing)\n";
     out_tracks << "# time_sec,track_id,x_km,y_km,speed_km_s,course_deg,code_data,altitude,altitude_valid,confidence,hit_count,state,type,code_reliable,alt_reliable\n";
     out_tracks << "# " << std::string(80, '-') << "\n";
+    VRL_LOG_DEBUG(modules::MAIN, "Tracks output file: " + config.tracks_file);
     
     std::ofstream out_plots;
     bool write_plots = !config.plots_file.empty();
@@ -690,9 +692,9 @@ int main(int argc, char* argv[]) {
             out_plots << "# Plots (from combined processing)\n";
             out_plots << "# time_sec,azimuth_deg,range_km,x_km,y_km,type,code_data,altitude,altitude_valid,altitude_attempts,spi,reply_count,garble_count,azimuth_span_deg,range_span_km,first_reply_time,last_reply_time\n";
             out_plots << "# " << std::string(80, '-') << "\n";
-            std::cout << "Writing plots to: " << config.plots_file << "\n";
+            VRL_LOG_INFO(modules::MAIN, "Writing plots to: " + config.plots_file);
         } else {
-            std::cerr << "Warning: Cannot open plots file: " << config.plots_file << std::endl;
+            VRL_LOG_WARN(modules::MAIN, "Cannot open plots file: " + config.plots_file);
             write_plots = false;
         }
     }
@@ -719,11 +721,14 @@ int main(int argc, char* argv[]) {
     int rbs_replies_processed = 0;
     int uvd_replies_processed = 0;
     int plots_generated = 0;
+    int sector_count = 0;
+    
+    VRL_LOG_INFO(modules::MAIN, "Starting processing...");
     
     while (std::getline(in, line)) {
         line_num++;
-        if (line_num % 1000 == 0) {
-            std::cout << "\rProcessing line " << line_num << "..." << std::flush;
+        if (line_num % 10000 == 0) {
+            VRL_LOG_DEBUG(modules::MAIN, "Processed " + std::to_string(line_num) + " lines");
         }
         
         if (line.empty() || line[0] == '#') continue;
@@ -732,7 +737,8 @@ int main(int argc, char* argv[]) {
         if (!parse_reply_line(line, reply)) continue;
         
         if (reply.type == "SECTOR") {
-            std::cout << "[MAIN] PROCESSING SECTOR at " << reply.azimuth << std::endl;            
+            sector_count++;
+            
             rbs_clusterer.process_sector(reply.azimuth);
             uvd_clusterer.process_sector(reply.azimuth);
             
@@ -760,37 +766,13 @@ int main(int argc, char* argv[]) {
             rbs_clusterer.add_reply(reply);
             rbs_replies_processed++;
             
-            #if 0
-            auto plots = rbs_clusterer.get_completed_plots();
-            for (const auto& plot : plots) {
-                if (write_plots && out_plots.is_open()) {
-                    write_plots_to_file({plot}, out_plots);
-                }
-                process_plot_in_tracker(plot, rbs_tracker, last_hit_rbs, prev_rbs_plot,
-                                       out_tracks, "RBS", 0, config.revolution_time);
-                plots_generated++;
-            }
-            #endif
-            
         } else if (reply.type == "UVD_DATA" || reply.type == "UVD_ALT") {
             uvd_clusterer.add_reply(reply);
             uvd_replies_processed++;
-            
-            #if 0
-            auto plots = uvd_clusterer.get_completed_plots();
-            for (const auto& plot : plots) {
-                if (write_plots && out_plots.is_open()) {
-                    write_plots_to_file({plot}, out_plots);
-                }
-                process_plot_in_tracker(plot, uvd_tracker, last_hit_uvd, prev_uvd_plot,
-                                       out_tracks, "UVD", 1000, config.revolution_time);
-                plots_generated++;
-            }
-            #endif
         }
     }
     
-    std::cout << "\nFinishing remaining clusters...\n";
+    VRL_LOG_INFO(modules::MAIN, "Processing complete. Finalizing remaining clusters...");
     
     rbs_clusterer.finish_all();
     auto final_rbs_plots = rbs_clusterer.get_final_plots();
@@ -820,9 +802,11 @@ int main(int argc, char* argv[]) {
     }
     in.close();
     
-    std::cout << "\nProcessed " << rbs_replies_processed << " RBS replies and " 
-              << uvd_replies_processed << " UVD replies\n";
-    std::cout << "Generated " << plots_generated << " plots\n";
+    VRL_LOG_INFO(modules::MAIN, "=== Results ===");
+    VRL_LOG_INFO(modules::MAIN, "Processed " + std::to_string(rbs_replies_processed) + 
+                 " RBS replies and " + std::to_string(uvd_replies_processed) + " UVD replies");
+    VRL_LOG_INFO(modules::MAIN, "Processed " + std::to_string(sector_count) + " sectors");
+    VRL_LOG_INFO(modules::MAIN, "Generated " + std::to_string(plots_generated) + " plots");
     
     auto rbs_tracks = rbs_tracker.get_active_tracks();
     auto uvd_tracks = uvd_tracker.get_active_tracks();
@@ -835,14 +819,15 @@ int main(int argc, char* argv[]) {
         if (t.state == TrackState::ACTIVE) uvd_confirmed++;
     }
     
-    std::cout << "\n=== Results ===\n";
-    std::cout << "RBS tracks: " << rbs_tracks.size() << " (confirmed: " << rbs_confirmed << ")\n";
-    std::cout << "UVD tracks: " << uvd_tracks.size() << " (confirmed: " << uvd_confirmed << ")\n";
-    std::cout << "Tracks written to " << config.tracks_file << "\n";
+    VRL_LOG_INFO(modules::MAIN, "RBS tracks: " + std::to_string(rbs_tracks.size()) + 
+                 " (confirmed: " + std::to_string(rbs_confirmed) + ")");
+    VRL_LOG_INFO(modules::MAIN, "UVD tracks: " + std::to_string(uvd_tracks.size()) + 
+                 " (confirmed: " + std::to_string(uvd_confirmed) + ")");
+    VRL_LOG_INFO(modules::MAIN, "Tracks written to " + config.tracks_file);
     if (write_plots) {
-        std::cout << "Plots written to " << config.plots_file << "\n";
+        VRL_LOG_INFO(modules::MAIN, "Plots written to " + config.plots_file);
     }
     
-    VRL_LOG_INFO(modules::MAIN, "Processing complete");
+    VRL_LOG_INFO(modules::MAIN, "=== Done ===");
     return 0;
 }
