@@ -486,7 +486,7 @@ void generate_replies(const SystemConfig& config, double duration_seconds,
 // ---- MAIN ----
 
 int main(int argc, char* argv[]) {
-    std::string config_file = "radar.conf";
+    std::string config_file = "../radar.conf";
     double duration_seconds = 300.0;
     std::string output_file = "replies.txt";
     double mode_a_error_prob = 0.5;

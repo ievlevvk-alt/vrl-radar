@@ -63,6 +63,8 @@ struct TrackData {
     int garble_count;
     int reply_count;
     std::string type;  // "RBS" или "UVD"
+    bool code_reliable;
+    bool altitude_reliable;    
 };
 
 struct TrackLabel {
@@ -74,6 +76,8 @@ struct TrackLabel {
     double speed;
     double course;
     std::string type;
+    bool code_reliable;
+    bool altitude_reliable;    
 };
 
 // ============================================================================
@@ -105,6 +109,7 @@ bool parse_reply_line(const std::string& line, ReplyData& reply) {
         reply.spi = (parts[6] == "1");
         reply.is_valid = (parts[8] == "1");
         reply.is_garble = (parts[9] == "1");
+
         return true;
     } catch (const std::exception&) {
         return false;
@@ -159,7 +164,7 @@ bool parse_track_line(const std::string& line, TrackData& track) {
     while (std::getline(ss_line, part, ',')) {
         parts.push_back(part);
     }
-    if (parts.size() < 13) return false;
+    if (parts.size() < 13) return false;  // Минимум 13 полей
     
     try {
         track.time_sec = std::stod(parts[0]);
@@ -170,7 +175,7 @@ bool parse_track_line(const std::string& line, TrackData& track) {
         track.course_deg = std::stod(parts[5]);
         
         std::string code_str = parts[6];
-        track.type = parts[12];  // "RBS" или "UVD"
+        track.type = parts[12];
         
         if (track.type == "RBS") {
             track.code_data = static_cast<uint32_t>(std::stoi(code_str, nullptr, 8));
@@ -183,11 +188,23 @@ bool parse_track_line(const std::string& line, TrackData& track) {
         track.confidence = std::stod(parts[9]);
         track.hit_count = std::stoi(parts[10]);
         track.state = std::stoi(parts[11]);
+        // track.type уже присвоен выше
+        
+        // Новые поля (если есть)
+        track.code_reliable = true;
+        track.altitude_reliable = true;
+        if (parts.size() >= 15) {
+            track.code_reliable = (parts[13] == "1");
+            track.altitude_reliable = (parts[14] == "1");
+        }
+        
         return true;
-    } catch (const std::exception&) {
+    } catch (const std::exception& e) {
+        std::cerr << "Parse error: " << e.what() << " in line: " << line << std::endl;
         return false;
     }
 }
+
 
 // ============================================================================
 // RENDERER
@@ -461,7 +478,8 @@ private:
             }
         }
     }
-    
+
+
     void draw_track_label(int x, int y, const TrackLabel& label) {
         if (!font_) return;
         
@@ -479,21 +497,25 @@ private:
         
         double speed_kmh = label.speed * 3600.0;
         
+        // Используем только ASCII символы
         char text[256];
         snprintf(text, sizeof(text),
-                 "Track %d\n"
-                 "Code: %s\n"
-                 "Alt: %d m\n"
-                 "Speed: %.0f km/h\n"
-                 "Course: %.1f°\n"
-                 "Conf: %.0f%% Hits: %d",
-                 label.track_id,
-                 code_str.c_str(),
-                 label.altitude,
-                 speed_kmh,
-                 label.course,
-                 label.confidence * 100,
-                 label.hit_count);
+                "Track %d\n"
+                "Code: %s [%s]\n"
+                "Alt: %d m [%s]\n"
+                "Speed: %.0f km/h\n"
+                "Course: %.1f deg\n"
+                "Conf: %.0f%% Hits: %d",
+                label.track_id,
+                code_str.c_str(),
+                label.code_reliable ? "OK" : "??",
+                label.altitude,
+                label.altitude_reliable ? "OK" : "??",
+                speed_kmh,
+                label.course,
+                label.confidence * 100,
+                label.hit_count);
+        
         
         std::vector<std::string> lines;
         std::stringstream ss(text);
@@ -621,6 +643,8 @@ private:
                 label.speed = latest->speed_km_s;
                 label.course = latest->course_deg;
                 label.type = latest->type;
+                label.code_reliable = latest->code_reliable;      // <-- ДОБАВИТЬ
+                label.altitude_reliable = latest->altitude_reliable; // <-- ДОБАВИТЬ                
                 
                 draw_track_label(x, y, label);
             }

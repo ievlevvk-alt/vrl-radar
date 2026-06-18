@@ -214,17 +214,17 @@ public:
     std::vector<PlotData> get_completed_plots() {
         std::vector<PlotData> result;
         
-        std::cout << "[GET_PLOTS] active_clusters_.size()=" << active_clusters_.size() << std::endl;
+        // 1. Сначала забираем уже готовые плоты из completed_plots_
+        result = std::move(completed_plots_);
+        completed_plots_.clear();
         
+        // 2. Проверяем активные кластеры и создаём новые плоты
         auto it = active_clusters_.begin();
         while (it != active_clusters_.end()) {
             if (it->is_completed(current_azimuth_, completion_gap_bins_)) {
-                std::cout << "[GET_PLOTS] Found completed cluster, replies=" << it->replies.size() << std::endl;
                 if (it->replies.size() >= 2) {
                     PlotData plot = create_plot_from_cluster(*it);
                     result.push_back(plot);
-                    std::cout << "[GET_PLOTS] Created plot, type=" << plot.type 
-                            << ", code=" << plot.code_data << std::endl;
                 }
                 it = active_clusters_.erase(it);
             } else {
@@ -474,6 +474,10 @@ void process_plot_in_tracker(const PlotData& plot,
                              uint64_t id_offset,
                              double revolution_time) {
     
+    std::cout << "[TRACKER] Processing plot: type=" << type 
+              << ", time=" << plot.time_sec 
+              << ", code=" << plot.code_data << std::endl;
+
     TargetReport report;
     report.x = plot.x_km * 1000.0;
     report.y = plot.y_km * 1000.0;
@@ -495,10 +499,69 @@ void process_plot_in_tracker(const PlotData& plot,
     }
     
     tracker.process_targets({report}, revolution);
+    std::cout << "[TRACKER] process_targets done" << std::endl;
     
     auto tracks = tracker.get_active_tracks();
+    std::cout << "[TRACKER] Got " << tracks.size() << " active tracks" << std::endl;
+
     for (const auto& track : tracks) {
+        std::cout << "[TRACKER] Track id=" << track.id 
+                  << ", hit_count=" << track.hit_count 
+                  << ", state=" << static_cast<int>(track.state) << std::endl;
+
         auto it = last_hit.find(track.id);
+        bool is_new_or_updated = (it == last_hit.end() || it->second != track.hit_count);
+        std::cout << "[TRACKER] is_new_or_updated=" << is_new_or_updated << std::endl;
+
+        if (is_new_or_updated) {
+            std::cout << "[TRACKER] WRITING TRACK TO FILE!" << std::endl;
+            double speed_km_s = track.ground_speed / 1000.0;
+            double course_deg = track.course_deg;
+            
+            if (speed_km_s < 0.001) {
+                auto prev = prev_plot.find(track.id);
+                if (prev != prev_plot.end()) {
+                    double dt = plot.time_sec - prev->second.time_sec;
+                    if (dt > 0.1) {
+                        double dx = plot.x_km - prev->second.x_km;
+                        double dy = plot.y_km - prev->second.y_km;
+                        double dist = sqrt(dx*dx + dy*dy);
+                        speed_km_s = dist / dt;
+                        course_deg = atan2(dx, dy) * 180.0 / M_PI;
+                        if (course_deg < 0) course_deg += 360.0;
+                    }
+                }
+                prev_plot[track.id] = plot;
+            }
+            
+            uint64_t display_id = track.id + id_offset;
+            
+            uint32_t code = (type == "RBS") ? track.mode3a_code : track.uvd_data20;
+            
+
+            out_tracks << std::fixed << std::setprecision(3) << plot.time_sec << ","
+                    << display_id << ","
+                    << std::setprecision(2) << track.x / 1000.0 << ","
+                    << track.y / 1000.0 << ","
+                    << std::setprecision(3) << speed_km_s << ","
+                    << std::setprecision(1) << course_deg << ","
+                    << format_code(code, type) << ","
+                    << track.altitude << ","
+                    << (track.altitude > 0 ? "1" : "0") << ","
+                    << std::setprecision(2) << track.confidence << ","
+                    << track.hit_count << ","
+                    << static_cast<int>(track.state) << ","
+                    << type << ","
+                    << (track.code_reliable ? "1" : "0") << ","
+                    << (track.altitude_reliable ? "1" : "0") << "\n";            
+
+
+            last_hit[track.id] = track.hit_count;
+        } else {
+            std::cout << "[TRACKER] SKIPPING (already written)" << std::endl;
+        }
+
+#if 0
         if (it == last_hit.end() || it->second != track.hit_count) {
             
             double speed_km_s = track.ground_speed / 1000.0;
@@ -524,22 +587,27 @@ void process_plot_in_tracker(const PlotData& plot,
             
             uint32_t code = (type == "RBS") ? track.mode3a_code : track.uvd_data20;
             
+
             out_tracks << std::fixed << std::setprecision(3) << plot.time_sec << ","
-                       << display_id << ","
-                       << std::setprecision(2) << track.x / 1000.0 << ","
-                       << track.y / 1000.0 << ","
-                       << std::setprecision(3) << speed_km_s << ","
-                       << std::setprecision(1) << course_deg << ","
-                       << format_code(code, type) << ","
-                       << track.altitude << ","
-                       << (track.altitude > 0 ? "1" : "0") << ","
-                       << std::setprecision(2) << track.confidence << ","
-                       << track.hit_count << ","
-                       << static_cast<int>(track.state) << ","
-                       << type << "\n";
-            
+                    << display_id << ","
+                    << std::setprecision(2) << track.x / 1000.0 << ","
+                    << track.y / 1000.0 << ","
+                    << std::setprecision(3) << speed_km_s << ","
+                    << std::setprecision(1) << course_deg << ","
+                    << format_code(code, type) << ","
+                    << track.altitude << ","
+                    << (track.altitude > 0 ? "1" : "0") << ","
+                    << std::setprecision(2) << track.confidence << ","
+                    << track.hit_count << ","
+                    << static_cast<int>(track.state) << ","
+                    << type << ","
+                    << (track.code_reliable ? "1" : "0") << ","
+                    << (track.altitude_reliable ? "1" : "0") << "\n";            
+
+
             last_hit[track.id] = track.hit_count;
         }
+#endif        
     }
 }
 
@@ -614,7 +682,7 @@ ProcessingConfig load_config(const std::string& config_file) {
 // ============================================================================
 
 int main(int argc, char* argv[]) {
-    std::string config_file = "radar.conf";
+    std::string config_file = "../radar.conf";
     std::string input_file = "replies.txt";
     std::string tracks_file = "tracks_combined.txt";
     
@@ -650,7 +718,7 @@ int main(int argc, char* argv[]) {
     
     std::ofstream out_tracks(config.tracks_file);
     out_tracks << "# Tracks (from combined processing)\n";
-    out_tracks << "# time_sec,track_id,x_km,y_km,speed_km_s,course_deg,code_data,altitude,altitude_valid,confidence,hit_count,state,type\n";
+    out_tracks << "# time_sec,track_id,x_km,y_km,speed_km_s,course_deg,code_data,altitude,altitude_valid,confidence,hit_count,state,type,code_reliable,alt_reliable\n";
     out_tracks << "# " << std::string(80, '-') << "\n";
     
     std::ofstream out_plots;
@@ -703,6 +771,7 @@ int main(int argc, char* argv[]) {
         if (!parse_reply_line(line, reply)) continue;
         
         if (reply.type == "SECTOR") {
+            std::cout << "[MAIN] PROCESSING SECTOR at " << reply.azimuth << std::endl;            
             rbs_clusterer.process_sector(reply.azimuth);
             uvd_clusterer.process_sector(reply.azimuth);
             
@@ -730,6 +799,7 @@ int main(int argc, char* argv[]) {
             rbs_clusterer.add_reply(reply);
             rbs_replies_processed++;
             
+            #if 0
             auto plots = rbs_clusterer.get_completed_plots();
             for (const auto& plot : plots) {
                 if (write_plots && out_plots.is_open()) {
@@ -739,11 +809,13 @@ int main(int argc, char* argv[]) {
                                        out_tracks, "RBS", 0, config.revolution_time);
                 plots_generated++;
             }
+            #endif
             
         } else if (reply.type == "UVD_DATA" || reply.type == "UVD_ALT") {
             uvd_clusterer.add_reply(reply);
             uvd_replies_processed++;
             
+            #if 0
             auto plots = uvd_clusterer.get_completed_plots();
             for (const auto& plot : plots) {
                 if (write_plots && out_plots.is_open()) {
@@ -753,6 +825,7 @@ int main(int argc, char* argv[]) {
                                        out_tracks, "UVD", 1000, config.revolution_time);
                 plots_generated++;
             }
+            #endif
         }
     }
     

@@ -108,10 +108,21 @@ void TrackManager::process_targets(const std::vector<TargetReport>& targets, uin
     create_new_tracks(targets, revolution);
     manage_track_states(revolution);
     
+    // ===== ДОБАВИТЬ ЭТОТ ВЫВОД =====
+    std::cout << "[TrackManager] After manage_track_states: tracks_.size()=" << tracks_.size() << std::endl;
+    for (const auto& [id, twf] : tracks_) {
+        std::cout << "[TrackManager]   Track " << id 
+                  << ": state=" << static_cast<int>(twf.track.state)
+                  << ", hit_count=" << twf.track.hit_count
+                  << ", confidence=" << twf.track.confidence << std::endl;
+    }
+    // ==============================
+    
     if (config_.debug_mode) {
         std::cout << "[TrackManager] Active tracks: " << tracks_.size() << "\n";
     }
 }
+
 
 void TrackManager::update_tracks(const std::vector<TargetReport>& targets, uint32_t revolution) {
     std::vector<bool> target_matched(targets.size(), false);
@@ -236,18 +247,25 @@ void TrackManager::update_tracks(const std::vector<TargetReport>& targets, uint3
 }
 
 void TrackManager::create_new_tracks(const std::vector<TargetReport>& targets, uint32_t revolution) {
+    std::cout << "[create_new_tracks] Called with " << targets.size() << " targets, revolution=" << revolution << std::endl;
+    
     for (const auto& target : targets) {
+        std::cout << "[create_new_tracks] Checking target: x=" << target.x << ", y=" << target.y << std::endl;
+        
         bool already_tracked = false;
         
         for (const auto& [id, twf] : tracks_) {
             double distance = calculate_distance(target, twf.track);
+            std::cout << "[create_new_tracks]   distance to track " << id << ": " << distance << std::endl;
             if (distance < config_.max_gate_distance) {
                 already_tracked = true;
+                std::cout << "[create_new_tracks]   -> already tracked!" << std::endl;
                 break;
             }
         }
         
         if (!already_tracked) {
+            std::cout << "[create_new_tracks] Creating NEW track!" << std::endl;
             Track new_track;
             new_track.id = next_id_++;
             new_track.state = TrackState::NEW;
@@ -284,6 +302,7 @@ void TrackManager::create_new_tracks(const std::vector<TargetReport>& targets, u
         }
     }
 }
+
 
 void TrackManager::manage_track_states(uint32_t revolution) {
     for (auto& [id, twf] : tracks_) {
@@ -322,15 +341,22 @@ double TrackManager::calculate_azimuth_diff(double az1, double az2) const {
 }
 
 std::vector<Track> TrackManager::get_active_tracks() const {
+    std::cout << "[get_active_tracks] tracks_.size()=" << tracks_.size() << std::endl;
+    
     std::vector<Track> result;
     for (const auto& [id, twf] : tracks_) {
+        std::cout << "[get_active_tracks] Track " << id 
+                  << ": state=" << static_cast<int>(twf.track.state) << std::endl;
+        
         if (twf.track.state == TrackState::ACTIVE || 
-            twf.track.state == TrackState::COASTING) {
+            twf.track.state == TrackState::COASTING ||
+            twf.track.state == TrackState::NEW) {
             result.push_back(twf.track);
         }
     }
     
-    // Сортируем по уверенности
+    std::cout << "[get_active_tracks] Returning " << result.size() << " tracks" << std::endl;
+    
     std::sort(result.begin(), result.end(),
         [](const Track& a, const Track& b) {
             return a.confidence > b.confidence;
@@ -338,6 +364,7 @@ std::vector<Track> TrackManager::get_active_tracks() const {
     
     return result;
 }
+
 
 std::vector<Track> TrackManager::get_confirmed_tracks() const {
     std::vector<Track> result;

@@ -55,6 +55,9 @@ struct Track {
     
     std::vector<TargetReport> history;
     size_t max_history{10};
+
+    bool code_reliable{true};      // достоверность номера борта (true/false)
+    bool altitude_reliable{true};  // достоверность высоты (true/false)    
     
     void add_history(const TargetReport& report) {
         history.push_back(report);
