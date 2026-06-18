@@ -432,6 +432,9 @@ class CoordinateTransformer {
 ====================
 
 
+cmake .. -DCMAKE_BUILD_TYPE=Release -DENABLE_VERBOSE_LOGGING=ON
+
+
 # 1. Генерация ответов
 ./tools/1_generate_replies ../config/radar.conf 300 replies.txt
 

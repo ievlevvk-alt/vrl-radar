@@ -1,6 +1,7 @@
 // tools/1_generate_replies.cpp
 #include "vrl/radar/simulation/simulator.h"
 #include "vrl/radar/core/config.h"
+#include "vrl/radar/utils/logger.h"
 #include <iostream>
 #include <fstream>
 #include <chrono>
@@ -11,8 +12,8 @@
 #include <cstdlib>
 
 using namespace vrl::radar;
+using namespace vrl::radar::utils;
 
-// Безопасный парсинг double из строки
 double safe_stod(const std::string& str, double default_value = 0.0) {
     if (str.empty()) return default_value;
     
@@ -27,7 +28,6 @@ double safe_stod(const std::string& str, double default_value = 0.0) {
     }
 }
 
-// ---- Функции для работы с Mode C ----
 bool is_valid_mode_c_code(uint16_t code) {
     if (code == 0) return false;
     
@@ -82,7 +82,6 @@ uint16_t generate_invalid_mode_c_code() {
     return invalid_code;
 }
 
-// ---- Структура траектории ----
 struct TargetTrajectory {
     GeneratedTarget target;
     double start_time;
@@ -92,7 +91,6 @@ struct TargetTrajectory {
     bool uvd_mode_toggle;
 };
 
-// ---- Обновление позиции цели ----
 void update_target_position(GeneratedTarget& target, double time_seconds, double revolution_time) {
     if (!target.use_linear_motion) return;
     
@@ -111,14 +109,17 @@ void update_target_position(GeneratedTarget& target, double time_seconds, double
     if (target.azimuth_deg < 0) target.azimuth_deg += 360.0;
 }
 
-// ---- Основная функция генерации ----
 void generate_replies(const SystemConfig& config, double duration_seconds, 
                       const std::string& output_file,
                       double mode_a_error_prob, double mode_c_error_prob, 
                       double invalid_prob) {
+    VRL_LOG_INFO(modules::SIMULATOR, "Starting reply generation");
+    VRL_LOG_DEBUG(modules::SIMULATOR, "Duration: " + std::to_string(duration_seconds) + "s");
+    VRL_LOG_DEBUG(modules::SIMULATOR, "Output: " + output_file);
+    
     std::ofstream out(output_file);
     if (!out.is_open()) {
-        std::cerr << "Error: Cannot open " << output_file << std::endl;
+        VRL_LOG_ERROR(modules::SIMULATOR, "Cannot open output file: " + output_file);
         return;
     }
 
@@ -143,7 +144,6 @@ void generate_replies(const SystemConfig& config, double duration_seconds,
 
     std::vector<TargetTrajectory> trajectories;
 
-    // Добавляем RBS цели
     for (auto& target : config.rbs_targets) {
         if (!target.enabled) continue;
         TargetTrajectory traj;
@@ -155,11 +155,12 @@ void generate_replies(const SystemConfig& config, double duration_seconds,
         traj.uvd_mode_toggle = false;
         trajectories.push_back(traj);
         
-        std::cout << "Added RBS target: " << target.name 
-                  << " at (" << target.azimuth_deg << "°, " << target.range_km << " km)\n";
+        VRL_LOG_DEBUG(modules::SIMULATOR, 
+                      "Added RBS target: " + target.name + 
+                      " at (" + std::to_string(target.azimuth_deg) + "°, " + 
+                      std::to_string(target.range_km) + " km)");
     }
 
-    // Добавляем УВД цели
     for (auto& target : config.uvd_targets) {
         if (!target.enabled) continue;
         TargetTrajectory traj;
@@ -171,22 +172,25 @@ void generate_replies(const SystemConfig& config, double duration_seconds,
         traj.uvd_mode_toggle = true;
         trajectories.push_back(traj);
         
-        std::cout << "Added UVD target: " << target.name 
-                  << " at (" << target.azimuth_deg << "°, " << target.range_km << " km)\n";
+        VRL_LOG_DEBUG(modules::SIMULATOR, 
+                      "Added UVD target: " + target.name + 
+                      " at (" + std::to_string(target.azimuth_deg) + "°, " + 
+                      std::to_string(target.range_km) + " km)");
     }
 
     if (trajectories.empty()) {
-        std::cerr << "Warning: No targets enabled in configuration\n";
+        VRL_LOG_WARN(modules::SIMULATOR, "No targets enabled in configuration");
         out.close();
         return;
     }
 
-    std::cout << "\nError probabilities: Mode A=" << mode_a_error_prob 
-              << ", Mode C=" << mode_c_error_prob 
-              << ", invalid=" << invalid_prob << "\n\n";
+    VRL_LOG_INFO(modules::SIMULATOR, 
+                 "Error probabilities: Mode A=" + std::to_string(mode_a_error_prob) +
+                 ", Mode C=" + std::to_string(mode_c_error_prob) +
+                 ", invalid=" + std::to_string(invalid_prob));
 
     int total_steps = static_cast<int>(duration_seconds / TIME_STEP);
-    std::cout << "Generating " << total_steps << " steps...\n";
+    VRL_LOG_DEBUG(modules::SIMULATOR, "Total steps: " + std::to_string(total_steps));
 
     int reply_count = 0;
     int uvd_reply_count = 0;
@@ -202,6 +206,8 @@ void generate_replies(const SystemConfig& config, double duration_seconds,
     static std::mt19937 rng(std::random_device{}());
     std::uniform_real_distribution<double> error_dist(0.0, 1.0);
 
+    VRL_LOG_INFO(modules::SIMULATOR, "Generating replies...");
+
     for (int step = 0; step < total_steps; ++step) {
         if (step % progress_step == 0) {
             int percent = (step * 100) / total_steps;
@@ -211,7 +217,6 @@ void generate_replies(const SystemConfig& config, double duration_seconds,
         double time_sec = step * TIME_STEP;
         uint16_t azimuth = step % AZIMUTH_STEPS;
 
-        // Маркеры
         if (!first && azimuth < prev_azimuth && (prev_azimuth - azimuth) > 2048) {
             out << std::fixed << std::setprecision(6) << time_sec << ",0,0,NORTH,0,0,0,0,0,0\n";
         }
@@ -223,7 +228,6 @@ void generate_replies(const SystemConfig& config, double duration_seconds,
                 << azimuth << ",0,SECTOR,0,0,0,0,0,0\n";
         }
 
-        // Генерация ответов
         for (auto& traj : trajectories) {
             if (time_sec < traj.start_time || time_sec > traj.end_time) continue;
 
@@ -235,11 +239,13 @@ void generate_replies(const SystemConfig& config, double duration_seconds,
             double az_diff = std::abs(target.azimuth_deg - current_az_deg);
             az_diff = std::min(az_diff, 360.0 - az_diff);
             
-            if (target.range_km < 0 || target.range_km > 500) continue;
+            if (target.range_km < 0 || target.range_km > 500) {
+                VRL_LOG_TRACE(modules::SIMULATOR, "Target out of range: " + std::to_string(target.range_km));
+                continue;
+            }
             
             if (az_diff <= half_beamwidth) {
                 if (traj.is_rbs) {
-                    // RBS генерация
                     uint16_t rbs_code;
                     bool spi_value;
                     bool is_mode_a;
@@ -253,9 +259,11 @@ void generate_replies(const SystemConfig& config, double duration_seconds,
                             if (error_dist(rng) < invalid_prob) {
                                 rbs_code = generate_invalid_mode_c_code();
                                 invalid_codes++;
+                                VRL_LOG_TRACE(modules::SIMULATOR, "Generated invalid code");
                             } else {
                                 rbs_code = corrupt_mode_c_code(original_code);
                                 mode_a_errors++;
+                                VRL_LOG_TRACE(modules::SIMULATOR, "Corrupted Mode A code");
                             }
                         } else {
                             rbs_code = original_code;
@@ -312,7 +320,6 @@ void generate_replies(const SystemConfig& config, double duration_seconds,
                     traj.mode_a_toggle = !traj.mode_a_toggle;
                     
                 } else {
-                    // УВД генерация
                     uint32_t uvd_data;
                     bool is_altitude;
                     int altitude_value = 0;
@@ -360,13 +367,25 @@ void generate_replies(const SystemConfig& config, double duration_seconds,
     }
 
     out.close();
-    std::cout << "\rProgress: 100% (" << total_steps << "/" << total_steps << ")" 
-              << " Errors: " << mode_a_errors + mode_c_errors + invalid_codes << "\n";
-    std::cout << "\nGenerated " << reply_count << " RBS replies and " << uvd_reply_count << " UVD replies\n";
+    
+    VRL_LOG_INFO(modules::SIMULATOR, 
+                 "Generated " + std::to_string(reply_count) + " RBS replies and " +
+                 std::to_string(uvd_reply_count) + " UVD replies");
+    VRL_LOG_INFO(modules::SIMULATOR, 
+                 "Errors: Mode A=" + std::to_string(mode_a_errors) +
+                 ", Mode C=" + std::to_string(mode_c_errors) +
+                 ", Invalid=" + std::to_string(invalid_codes));
 }
 
-// ---- MAIN ----
 int main(int argc, char* argv[]) {
+    // Настройка логгера
+    auto& logger = Logger::instance();
+    logger.set_level(LogLevel::DEBUG);
+    logger.set_console_output(true);
+    logger.set_file_output("radar.log");
+    
+    VRL_LOG_INFO(modules::MAIN, "=== Step 1: Generate Replies ===");
+    
     std::string config_file = "../config/radar.conf";
     double duration_seconds = 300.0;
     std::string output_file = "replies.txt";
@@ -381,20 +400,25 @@ int main(int argc, char* argv[]) {
     if (argc > 5) mode_c_error_prob = safe_stod(argv[5], 0.5);
     if (argc > 6) invalid_prob = safe_stod(argv[6], 0.3);
 
-    std::cout << "=== Step 1: Generate Replies ===\n";
-    std::cout << "Config: " << config_file << "\n";
-    std::cout << "Duration: " << duration_seconds << " seconds\n";
-    std::cout << "Output: " << output_file << "\n\n";
+    VRL_LOG_DEBUG(modules::MAIN, "Config file: " + config_file);
+    VRL_LOG_DEBUG(modules::MAIN, "Duration: " + std::to_string(duration_seconds) + "s");
+    VRL_LOG_DEBUG(modules::MAIN, "Output: " + output_file);
 
     ConfigParser parser;
     if (!parser.load(config_file)) {
-        std::cerr << "Error: Cannot load config file: " << config_file << "\n";
+        VRL_LOG_ERROR(modules::MAIN, "Cannot load config file: " + config_file);
         return 1;
     }
     
     SystemConfig config = ConfigBuilder::build(parser);
+    
+    VRL_LOG_INFO(modules::MAIN, "Configuration loaded successfully");
+    VRL_LOG_DEBUG(modules::MAIN, "RBS targets: " + std::to_string(config.rbs_targets.size()));
+    VRL_LOG_DEBUG(modules::MAIN, "UVD targets: " + std::to_string(config.uvd_targets.size()));
+    
     generate_replies(config, duration_seconds, output_file, 
                      mode_a_error_prob, mode_c_error_prob, invalid_prob);
-
+    
+    VRL_LOG_INFO(modules::MAIN, "=== Done ===");
     return 0;
 }

@@ -2,8 +2,10 @@
 
 # Основная библиотека
 add_library(vrl_radar
+    # Core
     ${CMAKE_CURRENT_SOURCE_DIR}/core/config.cpp
     
+    # Processing
     ${CMAKE_CURRENT_SOURCE_DIR}/processing/tracker.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/processing/kalman_filter.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/processing/cluster.cpp
@@ -12,9 +14,12 @@ add_library(vrl_radar
     ${CMAKE_CURRENT_SOURCE_DIR}/processing/garbling_solver_iterative.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/processing/reply_processor.cpp
     
+    # Simulation
     ${CMAKE_CURRENT_SOURCE_DIR}/simulation/simulator.cpp
     
+    # Utils
     ${CMAKE_CURRENT_SOURCE_DIR}/utils/utils.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/utils/logger.cpp
 )
 
 # Настройка include директорий для библиотеки
@@ -31,6 +36,12 @@ target_link_libraries(vrl_radar
     PUBLIC
         ${EIGEN3_LIBRARIES}
 )
+
+# Опция для включения детального логирования
+option(ENABLE_VERBOSE_LOGGING "Enable verbose logging" OFF)
+if(ENABLE_VERBOSE_LOGGING)
+    target_compile_definitions(vrl_radar PUBLIC VRL_VERBOSE_LOGGING)
+endif()
 
 # Устанавливаем библиотеку
 install(TARGETS vrl_radar
