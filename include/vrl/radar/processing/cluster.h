@@ -37,8 +37,33 @@ struct TargetCluster {
     
     void add_scan(const ScanReplies& scan);
     bool is_active(uint16_t current_azimuth, int max_gap_azimuth) const;
-    std::vector<RBSReply> get_all_rbs() const;
-    std::vector<UVDReply> get_all_uvd() const;
+    
+    /**
+     * @brief Получить все RBS ответы (копирование с move)
+     * @return вектор RBS ответов
+     */
+    std::vector<RBSReply> get_all_rbs() &&;  // rvalue-ref версия (move)
+    
+    /**
+     * @brief Получить все RBS ответы (const ссылка)
+     * @return const ссылка на вектор RBS ответов
+     * @note Временный объект создается, используйте move-версию когда возможно
+     */
+    std::vector<RBSReply> get_all_rbs() const&;  // lvalue-ref версия (копирование)
+    
+    /**
+     * @brief Получить все UVD ответы (копирование с move)
+     * @return вектор UVD ответов
+     */
+    std::vector<UVDReply> get_all_uvd() &&;  // rvalue-ref версия (move)
+    
+    /**
+     * @brief Получить все UVD ответы (const ссылка)
+     * @return const ссылка на вектор UVD ответов
+     * @note Временный объект создается, используйте move-версию когда возможно
+     */
+    std::vector<UVDReply> get_all_uvd() const&;  // lvalue-ref версия (копирование)
+    
     uint16_t azimuth_span() const;
     uint16_t range_span() const;
     size_t reply_scans_count() const;
@@ -73,7 +98,7 @@ private:
 };
 
 // ============================================================================
-// CLUSTER PROCESSOR - ОБНОВЛЕННАЯ ВЕРСИЯ
+// CLUSTER PROCESSOR
 // ============================================================================
 
 class ClusterProcessor {

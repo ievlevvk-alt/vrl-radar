@@ -1159,3 +1159,31 @@ cmake -DENABLE_DEBUG_LOGGING=OFF ..
 make -j4
 
 ========================
+
+Как это работает
+Две перегруженные версии
+cpp
+
+// Для временных объектов (rvalue) - эффективно
+std::vector<RBSReply> get_all_rbs() &&;
+
+// Для постоянных объектов (lvalue) - безопасно
+std::vector<RBSReply> get_all_rbs() const&;
+
+Использование
+cpp
+
+// Случай 1: Временный объект (move)
+TargetCluster temp;
+auto replies = std::move(temp).get_all_rbs();  // Использует && версию - move
+
+// Случай 2: Постоянный объект (копирование)
+const TargetCluster& const_cluster = ...;
+auto replies = const_cluster.get_all_rbs();    // Использует const& версию - копирование
+
+// Случай 3: Не-const объект (копирование по умолчанию)
+TargetCluster cluster;
+auto replies = cluster.get_all_rbs();          // Использует const& версию (так как cluster - lvalue)
+
+=============
+

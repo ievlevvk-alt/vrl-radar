@@ -54,19 +54,75 @@ bool TargetCluster::is_active(uint16_t current_azimuth, int max_gap_azimuth) con
     return gap <= max_gap_azimuth;
 }
 
-std::vector<RBSReply> TargetCluster::get_all_rbs() const {
+// Версия для rvalue (move-семантика) - для временных объектов
+std::vector<RBSReply> TargetCluster::get_all_rbs() && {
     std::vector<RBSReply> result;
+    
+    size_t total = 0;
     for (const auto& scan : scans) {
-        result.insert(result.end(), scan.rbs_replies.begin(), scan.rbs_replies.end());
+        total += scan.rbs_replies.size();
     }
+    result.reserve(total);
+    
+    for (auto& scan : scans) {
+        for (auto& reply : scan.rbs_replies) {
+            result.push_back(std::move(reply));
+        }
+    }
+    
     return result;
 }
 
-std::vector<UVDReply> TargetCluster::get_all_uvd() const {
+// Версия для const lvalue (копирование) - для постоянных объектов
+std::vector<RBSReply> TargetCluster::get_all_rbs() const& {
+    std::vector<RBSReply> result;
+    
+    size_t total = 0;
+    for (const auto& scan : scans) {
+        total += scan.rbs_replies.size();
+    }
+    result.reserve(total);
+    
+    for (const auto& scan : scans) {
+        result.insert(result.end(), scan.rbs_replies.begin(), scan.rbs_replies.end());
+    }
+    
+    return result;
+}
+
+// Версия для rvalue (move-семантика) - для временных объектов
+std::vector<UVDReply> TargetCluster::get_all_uvd() && {
     std::vector<UVDReply> result;
+    
+    size_t total = 0;
+    for (const auto& scan : scans) {
+        total += scan.uvd_replies.size();
+    }
+    result.reserve(total);
+    
+    for (auto& scan : scans) {
+        for (auto& reply : scan.uvd_replies) {
+            result.push_back(std::move(reply));
+        }
+    }
+    
+    return result;
+}
+
+// Версия для const lvalue (копирование) - для постоянных объектов
+std::vector<UVDReply> TargetCluster::get_all_uvd() const& {
+    std::vector<UVDReply> result;
+    
+    size_t total = 0;
+    for (const auto& scan : scans) {
+        total += scan.uvd_replies.size();
+    }
+    result.reserve(total);
+    
     for (const auto& scan : scans) {
         result.insert(result.end(), scan.uvd_replies.begin(), scan.uvd_replies.end());
     }
+    
     return result;
 }
 
@@ -189,11 +245,14 @@ void ClusterTracker::complete_expired_clusters(uint16_t current_azimuth) {
     
     while (it != active_clusters_.end()) {
         if (!it->is_active(current_azimuth, max_gap_azimuth_)) {
+            // Используем const& версию, так как it - const
+            auto rbs = it->get_all_rbs();
+            auto uvd = it->get_all_uvd();
+            
             VRL_LOG_DEBUG(modules::CLUSTER, "Cluster completed: azimuth_span=" + 
                           std::to_string(it->azimuth_span()) + 
                           ", range_span=" + std::to_string(it->range_span()) +
-                          ", replies=" + std::to_string(it->get_all_rbs().size() + 
-                                                        it->get_all_uvd().size()));
+                          ", replies=" + std::to_string(rbs.size() + uvd.size()));
             completed_clusters_.push_back(std::move(*it));
             it = active_clusters_.erase(it);
             completed++;
@@ -296,11 +355,9 @@ std::vector<TargetReport> ClusterProcessor::process_cluster(const TargetCluster&
     
     std::vector<TargetReport> reports;
     
-    // Группируем по дальности
     auto range_groups = range_grouper_.group(cluster);
     
     for (const auto& group : range_groups) {
-        // Проверяем минимальное количество ответов
         if (static_cast<int>(group.total_replies()) < min_hits_) {
             VRL_LOG_TRACE(modules::CLUSTER, "Skipping group: insufficient replies (" + 
                           std::to_string(group.total_replies()) + " < " + 
@@ -308,14 +365,12 @@ std::vector<TargetReport> ClusterProcessor::process_cluster(const TargetCluster&
             continue;
         }
         
-        // Обработка перекрытий (garbling)
         if (group.has_overlap() && split_garbled_ && garbling_solver_) {
             auto split_reports = process_garbled_group(group);
             reports.insert(reports.end(), split_reports.begin(), split_reports.end());
             continue;
         }
         
-        // Обработка RBS
         if (group.has_rbs()) {
             auto report = rbs_processor_.process_group(group);
             if (report) {
@@ -323,7 +378,6 @@ std::vector<TargetReport> ClusterProcessor::process_cluster(const TargetCluster&
             }
         }
         
-        // Обработка UVD
         if (group.has_uvd()) {
             auto report = uvd_processor_.process_group(group);
             if (report) {
