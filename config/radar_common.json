@@ -10,5 +10,23 @@
         "max_azimuth_diff_for_overlap": 2.0,
         "max_range_diff_for_overlap": 10,
         "min_amplitude": 10
+    },
+    "logging": {
+        "console_enabled": true,
+        "file_enabled": true,
+        "log_file": "radar.log",
+        "timestamp_format": "%Y-%m-%d %H:%M:%S",
+        "modules": {
+            "Main": "INFO",
+            "Config": "INFO",
+            "Simulator": "DEBUG",
+            "Tracker": "INFO",
+            "Cluster": "INFO",
+            "Garbling": "INFO",
+            "Kalman": "INFO",
+            "Processing": "INFO",
+            "Utils": "INFO",
+            "Player": "INFO"
+        }
     }
 }

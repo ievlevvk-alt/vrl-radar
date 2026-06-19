@@ -382,14 +382,6 @@ void generate_replies(const SystemConfig& config, double duration_seconds,
 }
 
 int main(int argc, char* argv[]) {
-    // Настройка логгера
-    auto& logger = Logger::instance();
-    logger.set_level(LogLevel::DEBUG);
-    logger.set_console_output(true);
-    logger.set_file_output("radar.log");
-    
-    VRL_LOG_INFO(modules::MAIN, "=== Step 1: Generate Replies ===");
-    
     std::string config_file = "../config/radar.json";
     double duration_seconds = 300.0;
     std::string output_file = "replies.txt";
@@ -404,16 +396,22 @@ int main(int argc, char* argv[]) {
     if (argc > 5) mode_c_error_prob = safe_stod(argv[5], 0.5);
     if (argc > 6) invalid_prob = safe_stod(argv[6], 0.3);
 
-    VRL_LOG_DEBUG(modules::MAIN, "Config file: " + config_file);
-    VRL_LOG_DEBUG(modules::MAIN, "Duration: " + std::to_string(duration_seconds) + "s");
-    VRL_LOG_DEBUG(modules::MAIN, "Output: " + output_file);
-
+    // Загружаем конфигурацию
     ConfigLoader loader;
     SystemConfig config;
     if (!loader.load(config_file, config)) {
-        VRL_LOG_ERROR(modules::MAIN, "Cannot load config file: " + config_file);
+        std::cerr << "Cannot load config file: " << config_file << std::endl;
         return 1;
     }
+
+    // Настраиваем логгер из конфигурации
+    auto& logger = Logger::instance();
+    logger.configure(config.logging);
+
+    VRL_LOG_INFO(modules::MAIN, "=== Step 1: Generate Replies ===");
+    VRL_LOG_DEBUG(modules::MAIN, "Config file: " + config_file);
+    VRL_LOG_DEBUG(modules::MAIN, "Duration: " + std::to_string(duration_seconds) + "s");
+    VRL_LOG_DEBUG(modules::MAIN, "Output: " + output_file);
 
     VRL_LOG_INFO(modules::MAIN, "Configuration loaded successfully");
     VRL_LOG_DEBUG(modules::MAIN, "RBS targets: " + std::to_string(config.rbs_targets.size()));

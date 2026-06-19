@@ -1,6 +1,7 @@
 // include/vrl/radar/utils/logger.h
 #pragma once
 
+#include "../core/logging_config.h"  // <-- ДОБАВЛЯЕМ
 #include <string>
 #include <sstream>
 #include <fstream>
@@ -11,6 +12,7 @@
 #include <iostream>
 #include <vector>
 #include <functional>
+#include <map>
 
 namespace vrl {
 namespace radar {
@@ -43,6 +45,21 @@ inline const char* log_level_to_string(LogLevel level) {
     }
 }
 
+inline LogLevel string_to_log_level(const std::string& level) {
+    std::string upper = level;
+    std::transform(upper.begin(), upper.end(), upper.begin(), ::toupper);
+    
+    if (upper == "TRACE") return LogLevel::TRACE;
+    if (upper == "DEBUG") return LogLevel::DEBUG;
+    if (upper == "INFO") return LogLevel::INFO;
+    if (upper == "WARN" || upper == "WARNING") return LogLevel::WARN;
+    if (upper == "ERROR") return LogLevel::ERROR;
+    if (upper == "FATAL") return LogLevel::FATAL;
+    if (upper == "OFF") return LogLevel::OFF;
+    
+    return LogLevel::INFO;  // default
+}
+
 // ============================================================================
 // МОДУЛИ ДЛЯ ЛОГИРОВАНИЯ
 // ============================================================================
@@ -68,12 +85,24 @@ class Logger {
 public:
     static Logger& instance();
     
-    void set_level(LogLevel level) { level_ = level; }
-    LogLevel get_level() const { return level_; }
+    // Установка уровня по умолчанию
+    void set_default_level(LogLevel level) { default_level_ = level; }
+    LogLevel get_default_level() const { return default_level_; }
     
+    // Установка уровня для конкретного модуля
+    void set_module_level(const std::string& module, LogLevel level);
+    LogLevel get_module_level(const std::string& module) const;
+    
+    // Глобальные настройки
     void set_console_output(bool enable) { console_output_ = enable; }
     void set_file_output(const std::string& filename);
     void set_timestamp_format(const std::string& format) { timestamp_format_ = format; }
+    
+    /**
+     * @brief Настроить логгер из конфигурации
+     * @param config структура с настройками логирования
+     */
+    void configure(const LoggingConfig& config);  // <-- ТЕПЕРЬ ИЗВЕСТЕН LoggingConfig
     
     using LogHandler = std::function<void(LogLevel, const std::string&, const std::string&)>;
     void add_handler(LogHandler handler) { handlers_.push_back(handler); }
@@ -124,12 +153,13 @@ private:
     void notify_handlers(LogLevel level, const std::string& module, 
                          const std::string& message);
     
-    LogLevel level_{LogLevel::INFO};
+    LogLevel default_level_{LogLevel::INFO};
+    std::map<std::string, LogLevel> module_levels_;
     bool console_output_{true};
     std::string timestamp_format_{"%Y-%m-%d %H:%M:%S"};
     
     std::ofstream file_;
-    std::mutex mutex_;
+    mutable std::mutex mutex_;
     std::vector<LogHandler> handlers_;
 };
 
@@ -137,20 +167,12 @@ private:
 // МАКРОСЫ ДЛЯ УДОБНОГО ЛОГИРОВАНИЯ
 // ============================================================================
 
-// Основные макросы логирования
+// Основные макросы логирования - используют уровень модуля
 #define VRL_LOG_TRACE(module, msg) \
-    do { \
-        if (true) { \
-            vrl::radar::utils::Logger::instance().log(vrl::radar::utils::LogLevel::TRACE, module, msg); \
-        } \
-    } while(0)
+    vrl::radar::utils::Logger::instance().log(vrl::radar::utils::LogLevel::TRACE, module, msg)
 
 #define VRL_LOG_DEBUG(module, msg) \
-    do { \
-        if (true) { \
-            vrl::radar::utils::Logger::instance().log(vrl::radar::utils::LogLevel::DEBUG, module, msg); \
-        } \
-    } while(0)
+    vrl::radar::utils::Logger::instance().log(vrl::radar::utils::LogLevel::DEBUG, module, msg)
 
 #define VRL_LOG_INFO(module, msg) \
     vrl::radar::utils::Logger::instance().log(vrl::radar::utils::LogLevel::INFO, module, msg)

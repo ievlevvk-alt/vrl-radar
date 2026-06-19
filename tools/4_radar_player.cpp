@@ -12,6 +12,11 @@
 #include <algorithm>
 #include <memory>
 
+// ===== ДОБАВЛЯЕМ НЕОБХОДИМЫЕ ЗАГОЛОВКИ =====
+#include "vrl/radar/core/config_loader.hpp"
+#include "vrl/radar/core/config.h"
+#include "vrl/radar/utils/logger.h"
+
 // ============================================================================
 // RAII-ОБЕРТКИ ДЛЯ SDL РЕСУРСОВ
 // ============================================================================
@@ -1044,18 +1049,32 @@ void RadarPlayer::draw_info() {
 // ============================================================================
 
 int main(int argc, char* argv[]) {
+    std::string config_file = "../config/radar.json";
     std::string replies_file = "replies.txt";
     std::string plots_file = "plots_combined.txt";
     std::string tracks_file = "tracks_combined.txt";
     
-    if (argc > 1) replies_file = argv[1];
-    if (argc > 2) plots_file = argv[2];
-    if (argc > 3) tracks_file = argv[3];
+    if (argc > 1) config_file = argv[1];
+    if (argc > 2) replies_file = argv[2];
+    if (argc > 3) plots_file = argv[3];
+    if (argc > 4) tracks_file = argv[4];
     
-    std::cout << "=== Step 4: Radar Player ===\n";
-    std::cout << "Replies: " << replies_file << "\n";
-    std::cout << "Plots: " << plots_file << "\n";
-    std::cout << "Tracks: " << tracks_file << "\n\n";
+    // Загружаем конфигурацию
+    vrl::radar::ConfigLoader loader;
+    vrl::radar::SystemConfig system_config;
+    if (!loader.load(config_file, system_config)) {
+        std::cerr << "Cannot load config file: " << config_file << std::endl;
+        return 1;
+    }
+
+    // Настраиваем логгер из конфигурации
+    auto& logger = vrl::radar::utils::Logger::instance();
+    logger.configure(system_config.logging);
+
+    VRL_LOG_INFO(vrl::radar::utils::modules::MAIN, "=== Step 4: Radar Player ===");
+    VRL_LOG_DEBUG(vrl::radar::utils::modules::MAIN, "Replies: " + replies_file);
+    VRL_LOG_DEBUG(vrl::radar::utils::modules::MAIN, "Plots: " + plots_file);
+    VRL_LOG_DEBUG(vrl::radar::utils::modules::MAIN, "Tracks: " + tracks_file);
     
     RadarPlayer player(1280, 960);
     player.load_data(replies_file, plots_file, tracks_file);

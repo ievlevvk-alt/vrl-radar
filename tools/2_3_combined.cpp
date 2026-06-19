@@ -640,13 +640,6 @@ ProcessingConfig load_config(const std::string& config_file) {
 // ============================================================================
 
 int main(int argc, char* argv[]) {
-    auto& logger = Logger::instance();
-    logger.set_level(LogLevel::DEBUG);
-    logger.set_console_output(true);
-    logger.set_file_output("radar_processing.log");
-    
-    VRL_LOG_INFO(modules::MAIN, "=== Step 2+3: Combined Plot Formation and Track Processing ===");
-    
     std::string config_file = "../config/radar.json";
     std::string input_file = "replies.txt";
     std::string tracks_file = "tracks_combined.txt";
@@ -655,10 +648,23 @@ int main(int argc, char* argv[]) {
     if (argc > 2) input_file = argv[2];
     if (argc > 3) tracks_file = argv[3];
     
+    // Загружаем конфигурацию
+    ConfigLoader loader;
+    SystemConfig system_config;
+    if (!loader.load(config_file, system_config)) {
+        std::cerr << "Cannot load config file: " << config_file << std::endl;
+        return 1;
+    }
+
+    // Настраиваем логгер из конфигурации
+    auto& logger = Logger::instance();
+    logger.configure(system_config.logging);
+
+    VRL_LOG_INFO(modules::MAIN, "=== Step 2+3: Combined Plot Formation and Track Processing ===");
     VRL_LOG_DEBUG(modules::MAIN, "Config: " + config_file);
     VRL_LOG_DEBUG(modules::MAIN, "Input: " + input_file);
     VRL_LOG_DEBUG(modules::MAIN, "Tracks output: " + tracks_file);
-    
+        
     ProcessingConfig config = load_config(config_file);
     config.input_file = input_file;
     config.tracks_file = tracks_file;

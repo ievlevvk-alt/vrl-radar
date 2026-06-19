@@ -3,9 +3,10 @@
 
 #include "types.h"
 #include "replies.h"
+#include "logging_config.h"  // <-- ВМЕСТО logger.h
 #include <string>
 #include <vector>
-#include <map>          // <-- ДОБАВЛЕНО
+#include <map>
 #include <optional>
 #include <fstream>
 #include <sstream>
@@ -114,6 +115,7 @@ struct SystemConfig {
     RadarConfig radar;
     SimulatorConfig simulator;
     TrackerConfig tracker;
+    LoggingConfig logging;
     
     struct ProcessingConfig {
         int max_gap_azimuth{8};
@@ -122,8 +124,6 @@ struct SystemConfig {
         int min_hits{2};
         std::string output_file{"targets.txt"};
         std::string plots_output_file{""};
-        
-        // НОВЫЕ ПАРАМЕТРЫ ДЛЯ КЛАСТЕРИЗАЦИИ
         int min_cluster_hits{2};
         int range_threshold_bins{5};
         int azimuth_threshold_bins{3};
@@ -134,7 +134,6 @@ struct SystemConfig {
         double uvd_garbled_threshold{0.5};
     } processing;
     
-    // НОВАЯ СЕКЦИЯ: ПАРАМЕТРЫ УВЕРЕННОСТИ
     struct ConfidenceConfig {
         double initial_track_confidence{0.1};
         double coast_confidence_decay{0.05};
@@ -149,7 +148,6 @@ struct SystemConfig {
         double confidence_uvd_weight_stability{0.2};
     } confidence;
     
-    // НОВАЯ СЕКЦИЯ: ПАРАМЕТРЫ СИМУЛЯТОРА
     struct SimulatorConstants {
         double base_signal_power{128.0};
         double amp_variation_min{0.5};
@@ -164,7 +162,6 @@ struct SystemConfig {
         double min_amplitude_ratio_for_separation{0.3};
     } simulator_constants;
     
-    // НОВАЯ СЕКЦИЯ: АЗИМУТАЛЬНЫЕ КОНСТАНТЫ
     struct AzimuthConstants {
         int azimuth_bins{4096};
         int azimuth_half{2048};

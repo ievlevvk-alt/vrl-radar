@@ -294,9 +294,6 @@ bool ConfigLoader::parse_target(const json& j, GeneratedTarget& target, bool is_
     }
 }
 
-// ============================================================================
-// parse_config - ОБНОВЛЕН С НОВЫМИ ПОЛЯМИ
-// ============================================================================
 
 bool ConfigLoader::parse_config(const json& j, SystemConfig& config) {
     try {
@@ -566,6 +563,33 @@ bool ConfigLoader::parse_config(const json& j, SystemConfig& config) {
                 }
             }
         }
+
+        // ===== НОВАЯ СЕКЦИЯ: LOGGING =====
+        if (j.contains("logging") && j["logging"].is_object()) {
+            const auto& l = j["logging"];
+            
+            if (l.contains("console_enabled") && l["console_enabled"].is_boolean()) {
+                config.logging.console_enabled = l["console_enabled"].get<bool>();
+            }
+            if (l.contains("file_enabled") && l["file_enabled"].is_boolean()) {
+                config.logging.file_enabled = l["file_enabled"].get<bool>();
+            }
+            if (l.contains("log_file") && l["log_file"].is_string()) {
+                config.logging.log_file = l["log_file"].get<std::string>();
+            }
+            if (l.contains("timestamp_format") && l["timestamp_format"].is_string()) {
+                config.logging.timestamp_format = l["timestamp_format"].get<std::string>();
+            }
+            
+            // Загружаем уровни для модулей
+            if (l.contains("modules") && l["modules"].is_object()) {
+                for (auto& [module, level] : l["modules"].items()) {
+                    if (level.is_string()) {
+                        config.logging.set_module_level(module, level.get<std::string>());
+                    }
+                }
+            }
+        }
         
         return true;
     } catch (const std::exception& e) {
@@ -792,7 +816,22 @@ json ConfigLoader::to_json(const SystemConfig& config) {
         t["initial_y_km"] = target.initial_y_km;
         j["uvd_targets"].push_back(t);
     }
+
+    // Logging
+    json modules_json = json::object();
+    for (const auto& [module, level] : config.logging.module_levels) {
+        modules_json[module] = level;
+    }
     
+    j["logging"] = {
+        {"console_enabled", config.logging.console_enabled},
+        {"file_enabled", config.logging.file_enabled},
+        {"log_file", config.logging.log_file},
+        {"timestamp_format", config.logging.timestamp_format},
+        {"modules", modules_json}
+    };
+    
+
     return j;
 }
 
