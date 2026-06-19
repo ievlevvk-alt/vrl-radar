@@ -4,10 +4,11 @@ add_library(vrl_radar STATIC
     core/config.cpp
     core/config_loader.cpp
     processing/cluster.cpp
+    processing/dbscan_clusterer.cpp        # <-- НОВЫЙ ФАЙЛ
     processing/garbling_solver.cpp
     processing/kalman_filter.cpp
-    processing/extended_kalman_filter.cpp      # <-- НОВЫЙ ФАЙЛ
-    processing/unscented_kalman_filter.cpp     # <-- НОВЫЙ ФАЙЛ
+    processing/extended_kalman_filter.cpp
+    processing/unscented_kalman_filter.cpp
     processing/legacy_clusterer.cpp
     processing/range_grouper.cpp
     processing/rbs_processor.cpp

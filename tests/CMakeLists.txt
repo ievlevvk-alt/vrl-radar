@@ -219,7 +219,7 @@ add_test(NAME test_cluster_cleanup
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/tests
 )
 
-# НОВЫЙ ТЕСТ: RangeGrouper
+# Тест для RangeGrouper
 add_executable(test_range_grouper
     test_range_grouper.cpp
 )
@@ -243,7 +243,7 @@ add_test(NAME test_range_grouper
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/tests
 )
 
-# НОВЫЙ ТЕСТ: ObjectPool
+# Тест для ObjectPool
 add_executable(test_object_pool
     test_object_pool.cpp
 )
@@ -267,7 +267,7 @@ add_test(NAME test_object_pool
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/tests
 )
 
-# НОВЫЙ ТЕСТ: ExtendedKalmanFilter
+# Тест для ExtendedKalmanFilter
 add_executable(test_extended_kalman_filter
     test_extended_kalman_filter.cpp
 )
@@ -291,7 +291,7 @@ add_test(NAME test_extended_kalman_filter
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/tests
 )
 
-# НОВЫЙ ТЕСТ: UnscentedKalmanFilter
+# Тест для UnscentedKalmanFilter
 add_executable(test_unscented_kalman_filter
     test_unscented_kalman_filter.cpp
 )
@@ -315,7 +315,7 @@ add_test(NAME test_unscented_kalman_filter
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/tests
 )
 
-# НОВЫЙ ТЕСТ: FilterSelection
+# Тест для FilterSelection
 add_executable(test_filter_selection
     test_filter_selection.cpp
 )
@@ -339,3 +339,26 @@ add_test(NAME test_filter_selection
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/tests
 )
 
+# НОВЫЙ ТЕСТ: DBSCANClusterer
+add_executable(test_dbscan_clusterer
+    test_dbscan_clusterer.cpp
+)
+
+target_link_libraries(test_dbscan_clusterer
+    vrl_radar
+    GTest::gtest_main
+)
+
+target_compile_definitions(test_dbscan_clusterer
+    PRIVATE
+        $<$<BOOL:${ENABLE_VERBOSE_LOGGING}>:ENABLE_VERBOSE_LOGGING>
+)
+
+set_target_properties(test_dbscan_clusterer PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests"
+)
+
+add_test(NAME test_dbscan_clusterer 
+    COMMAND test_dbscan_clusterer
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/tests
+)

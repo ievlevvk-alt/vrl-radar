@@ -6,11 +6,12 @@
 #include "../core/config.h"
 #include "reply_processor.h"
 #include "garbling_solver.h"
-#include "range_grouper.h"  // <-- УЖЕ ЕСТЬ
+#include "range_grouper.h"
 #include "rbs_processor.h"
 #include "uvd_processor.h"
 #include "i_clusterer.h"
 #include "legacy_clusterer.h"
+#include "dbscan_clusterer.h"  // <-- ДОБАВЛЯЕМ
 #include <vector>
 #include <map>
 #include <set>
@@ -34,6 +35,7 @@ struct TargetCluster {
     uint32_t first_timestamp{0};
     uint32_t last_timestamp{0};
     
+    // УПРАВЛЕНИЕ ПО ОБОРОТАМ (MAI)
     uint32_t created_at_revolution{0};
     uint32_t last_update_revolution{0};
     uint32_t revolutions_since_update{0};
@@ -90,6 +92,16 @@ public:
     void set_max_gap_azimuth(int gap);
     void set_range_window(int window);
     
+    // НОВЫЙ МЕТОД: установка алгоритма кластеризации
+    enum class ClustererType {
+        LEGACY,    // Существующий алгоритм
+        DBSCAN     // DBSCAN алгоритм
+    };
+    
+    void set_clusterer_type(ClustererType type);
+    ClustererType get_clusterer_type() const { return clusterer_type_; }
+    std::string get_clusterer_type_name() const;
+    
     struct ClusterStats {
         size_t active_count{0};
         size_t completed_count{0};
@@ -102,7 +114,10 @@ public:
     ClusterStats get_stats() const;
     
 private:
+    std::unique_ptr<IClusterer> create_clusterer(ClustererType type);
+    
     std::unique_ptr<IClusterer> clusterer_;
+    ClustererType clusterer_type_{ClustererType::LEGACY};
     
     uint32_t max_revolutions_no_update_{5};
     size_t max_active_clusters_{100};
