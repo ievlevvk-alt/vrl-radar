@@ -121,7 +121,8 @@ std::optional<TargetReport> UVDProcessor::process_group(const RangeGrouper::Rang
     std::vector<uint16_t> azimuths;
     for (const auto* reply : group.uvd_replies) {
         azimuths.push_back(reply->azimuth);
-        report.sources.push_back(reply);
+        // ИСПРАВЛЕНО: используем новый типобезопасный метод
+        report.add_source(reply);
     }
     
     // Вычисляем позицию
@@ -163,7 +164,8 @@ std::optional<TargetReport> UVDProcessor::process_group(const RangeGrouper::Rang
     }
     
     VRL_LOG_TRACE(modules::CLUSTER, "UVD target: data=0x" + std::to_string(best_data) + 
-                  ", conf=" + std::to_string(best_confidence));
+                  ", conf=" + std::to_string(best_confidence) +
+                  ", sources=" + std::to_string(report.sources.size()));
     
     return report;
 }

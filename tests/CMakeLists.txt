@@ -146,3 +146,27 @@ add_test(NAME test_clusterer
     COMMAND test_clusterer
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/tests
 )
+
+# НОВЫЙ ТЕСТ: TargetReport
+add_executable(test_target_report
+    test_target_report.cpp
+)
+
+target_link_libraries(test_target_report
+    vrl_radar
+    GTest::gtest_main
+)
+
+target_compile_definitions(test_target_report
+    PRIVATE
+        $<$<BOOL:${ENABLE_VERBOSE_LOGGING}>:ENABLE_VERBOSE_LOGGING>
+)
+
+set_target_properties(test_target_report PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests"
+)
+
+add_test(NAME test_target_report 
+    COMMAND test_target_report
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/tests
+)

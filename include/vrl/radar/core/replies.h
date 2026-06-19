@@ -6,7 +6,9 @@
 #include <vector>
 #include <cstdint>
 #include <string>
-#include <cstring>  // Добавляем для memset
+#include <cstring>
+#include <variant>   // <-- ДОБАВЛЯЕМ
+#include <memory>    // <-- ДОБАВЛЯЕМ
 
 namespace vrl {
 namespace radar {
@@ -107,6 +109,9 @@ struct ScanReplies {
 // TARGET REPORT - ИСПРАВЛЕННАЯ ВЕРСИЯ
 // ============================================================================
 
+// Типобезопасный указатель на источник ответа
+using ReplySource = std::variant<const RBSReply*, const UVDReply*>;
+
 struct TargetReport {
     enum class SourceType { RBS, UVD } type;
     
@@ -145,7 +150,9 @@ struct TargetReport {
     bool is_reflection{false};
     bool is_sls_blanked{false};
     bool is_garbled{false};
-    std::vector<const void*> sources;
+    
+    // ИСПРАВЛЕНО: используем variant вместо vector<const void*>
+    std::vector<ReplySource> sources;
     
     // Конструктор по умолчанию
     TargetReport() : type(SourceType::RBS) {
@@ -174,7 +181,91 @@ struct TargetReport {
         report.type = SourceType::UVD;
         return report;
     }
+    
+    // Добавить источник ответа (типобезопасно)
+    void add_source(const RBSReply* source) {
+        sources.emplace_back(source);
+    }
+    
+    void add_source(const UVDReply* source) {
+        sources.emplace_back(source);
+    }
+    
+    // Получить все RBS источники
+    std::vector<const RBSReply*> get_rbs_sources() const {
+        std::vector<const RBSReply*> result;
+        for (const auto& s : sources) {
+            if (const auto* rbs = std::get_if<const RBSReply*>(&s)) {
+                result.push_back(*rbs);
+            }
+        }
+        return result;
+    }
+    
+    // Получить все UVD источники
+    std::vector<const UVDReply*> get_uvd_sources() const {
+        std::vector<const UVDReply*> result;
+        for (const auto& s : sources) {
+            if (const auto* uvd = std::get_if<const UVDReply*>(&s)) {
+                result.push_back(*uvd);
+            }
+        }
+        return result;
+    }
+    
+    // Проверить, есть ли источники
+    bool has_sources() const {
+        return !sources.empty();
+    }
+    
+    // Очистить источники
+    void clear_sources() {
+        sources.clear();
+    }
 };
+
+// ============================================================================
+// ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ РАБОТЫ С ИСТОЧНИКАМИ
+// ============================================================================
+
+/**
+ * @brief Обойти все источники в отчете с помощью лямбды
+ * 
+ * Пример использования:
+ * visit_sources(report.sources, [](const auto* source) {
+ *     if constexpr (std::is_same_v<decltype(source), const RBSReply*>) {
+ *         // Работа с RBS
+ *     } else if constexpr (std::is_same_v<decltype(source), const UVDReply*>) {
+ *         // Работа с UVD
+ *     }
+ * });
+ */
+template<typename Visitor>
+void visit_sources(const std::vector<ReplySource>& sources, Visitor&& visitor) {
+    for (const auto& source : sources) {
+        std::visit([&visitor](const auto* ptr) {
+            if constexpr (std::is_same_v<decltype(ptr), const RBSReply*>) {
+                visitor(ptr);
+            } else if constexpr (std::is_same_v<decltype(ptr), const UVDReply*>) {
+                visitor(ptr);
+            }
+        }, source);
+    }
+}
+
+/**
+ * @brief Обойти все источники в отчете с помощью лямбды (перегрузка для одного источника)
+ */
+template<typename Visitor>
+void visit_source(const ReplySource& source, Visitor&& visitor) {
+    std::visit([&visitor](const auto* ptr) {
+        if constexpr (std::is_same_v<decltype(ptr), const RBSReply*>) {
+            visitor(ptr);
+        } else if constexpr (std::is_same_v<decltype(ptr), const UVDReply*>) {
+            visitor(ptr);
+        }
+    }, source);
+}
 
 } // namespace radar
 } // namespace vrl
