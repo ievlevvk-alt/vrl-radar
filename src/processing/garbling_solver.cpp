@@ -29,6 +29,65 @@ void GarblingSolver::log(const std::string& msg) const {
 }
 
 // ============================================================================
+// ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ ДЕКОДИРОВАНИЯ БИТА UVD
+// ============================================================================
+
+/**
+ * @brief Декодировать бит UVD из левого и правого импульсов
+ * @param left_amp амплитуда левого импульса
+ * @param right_amp амплитуда правого импульса
+ * @param threshold порог обнаружения
+ * @param confidence выходная уверенность (0.0 - 1.0)
+ * @return true если бит = 1, false если бит = 0, std::nullopt если неопределенно
+ */
+static std::optional<bool> decode_uvd_bit(uint8_t left_amp, uint8_t right_amp, 
+                                          uint8_t threshold, double& confidence) {
+    confidence = 0.0;
+    
+    bool left_active = left_amp > threshold;
+    bool right_active = right_amp > threshold;
+    
+    // Случай 1: Левее активен, правый нет -> бит = 0
+    if (left_active && !right_active) {
+        double ratio = static_cast<double>(left_amp) / (left_amp + right_amp + 1);
+        confidence = std::min(1.0, ratio);
+        return false;
+    }
+    
+    // Случай 2: Правый активен, левый нет -> бит = 1
+    if (!left_active && right_active) {
+        double ratio = static_cast<double>(right_amp) / (left_amp + right_amp + 1);
+        confidence = std::min(1.0, ratio);
+        return true;
+    }
+    
+    // Случай 3: Оба активны -> конфликт, определяем по соотношению
+    if (left_active && right_active) {
+        double ratio = static_cast<double>(right_amp) / (left_amp + right_amp);
+        if (ratio > 0.6) {
+            confidence = ratio;
+            return true;   // правый значительно сильнее
+        } else if (ratio < 0.4) {
+            confidence = 1.0 - ratio;
+            return false;  // левый значительно сильнее
+        } else {
+            // Оба примерно равны -> неопределенность
+            confidence = 0.5;
+            return std::nullopt;
+        }
+    }
+    
+    // Случай 4: Оба не активны -> нет сигнала
+    if (!left_active && !right_active) {
+        confidence = 0.0;
+        return std::nullopt;  // нет данных
+    }
+    
+    confidence = 0.0;
+    return std::nullopt;
+}
+
+// ============================================================================
 // THRESHOLD GARBLING SOLVER - RBS
 // ============================================================================
 
@@ -118,25 +177,34 @@ std::vector<uint32_t> ThresholdGarblingSolver::detect_possible_data_uvd(
         uint8_t left2 = mixture[40 + bit * 2];
         uint8_t right2 = mixture[40 + bit * 2 + 1];
         
-        // Определяем значение бита по первому повторению
-        bool bit1_zero = (left1 > threshold_ && right1 <= threshold_);
-        bool bit1_one = (left1 <= threshold_ && right1 > threshold_);
-        
-        // Определяем значение бита по второму повторению
-        bool bit2_zero = (left2 > threshold_ && right2 <= threshold_);
-        bool bit2_one = (left2 <= threshold_ && right2 > threshold_);
+        double conf1, conf2;
+        auto val1 = decode_uvd_bit(left1, right1, threshold_, conf1);
+        auto val2 = decode_uvd_bit(left2, right2, threshold_, conf2);
         
         // Если оба повторения согласованы
-        if ((bit1_zero && bit2_zero) || (bit1_one && bit2_one)) {
+        if (val1.has_value() && val2.has_value() && val1.value() == val2.value()) {
             // Бит определен однозначно
-        } else if (bit1_zero || bit2_zero) {
-            // Бит скорее всего 0
-            data_votes[0] += 1;
-        } else if (bit1_one || bit2_one) {
-            // Бит скорее всего 1
-            data_votes[1 << bit] += 1;
+            if (val1.value()) {
+                data_votes[1 << bit] += static_cast<int>(conf1 * 2 + conf2 * 2);
+            } else {
+                data_votes[0] += static_cast<int>(conf1 * 2 + conf2 * 2);
+            }
+        } else if (val1.has_value() && !val2.has_value()) {
+            // Только первое повторение определено
+            if (val1.value()) {
+                data_votes[1 << bit] += static_cast<int>(conf1);
+            } else {
+                data_votes[0] += static_cast<int>(conf1);
+            }
+        } else if (!val1.has_value() && val2.has_value()) {
+            // Только второе повторение определено
+            if (val2.value()) {
+                data_votes[1 << bit] += static_cast<int>(conf2);
+            } else {
+                data_votes[0] += static_cast<int>(conf2);
+            }
         } else {
-            // Неопределенный бит - пропускаем
+            // Оба повторения неопределены
             data_votes[0] += 0;
         }
     }
@@ -144,22 +212,30 @@ std::vector<uint32_t> ThresholdGarblingSolver::detect_possible_data_uvd(
     // Формируем возможные данные
     uint32_t candidate_data = 0;
     for (int bit = 0; bit < 20; ++bit) {
-        // Простое голосование - большинство повторений
         uint8_t left1 = mixture[bit * 2];
         uint8_t right1 = mixture[bit * 2 + 1];
         uint8_t left2 = mixture[40 + bit * 2];
         uint8_t right2 = mixture[40 + bit * 2 + 1];
         
-        bool bit1 = (left1 > threshold_ && right1 <= threshold_) ? false : 
-                   (left1 <= threshold_ && right1 > threshold_) ? true : false;
-        bool bit2 = (left2 > threshold_ && right2 <= threshold_) ? false :
-                   (left2 <= threshold_ && right2 > threshold_) ? true : false;
+        double conf1, conf2;
+        auto val1 = decode_uvd_bit(left1, right1, threshold_, conf1);
+        auto val2 = decode_uvd_bit(left2, right2, threshold_, conf2);
         
-        if (bit1 && bit2) {
+        // Голосование с учетом уверенности
+        double vote_for_one = 0.0;
+        double vote_for_zero = 0.0;
+        
+        if (val1.has_value()) {
+            if (val1.value()) vote_for_one += conf1;
+            else vote_for_zero += conf1;
+        }
+        if (val2.has_value()) {
+            if (val2.value()) vote_for_one += conf2;
+            else vote_for_zero += conf2;
+        }
+        
+        if (vote_for_one > vote_for_zero && vote_for_one > 0.3) {
             candidate_data |= (1 << bit);
-        } else if (bit1 || bit2) {
-            // Только одно повторение указывает на 1
-            // Добавляем с меньшим весом
         }
     }
     
@@ -338,7 +414,7 @@ SeparationResult<UVDReply> ThresholdGarblingSolver::separate_uvd(
         separated.is_valid = true;
         separated.error_mask = 0;
         
-        // Восстанавливаем биты
+        // Восстанавливаем биты с использованием улучшенной логики
         for (int bit = 0; bit < 20; ++bit) {
             bool bit_value = (data >> bit) & 1;
             size_t offset = bit * 2;
@@ -358,21 +434,22 @@ SeparationResult<UVDReply> ThresholdGarblingSolver::separate_uvd(
             }
         }
         
-        // Проверяем согласованность повторений
+        // Проверяем согласованность повторений с улучшенной логикой
         uint32_t error_mask = 0;
         for (int bit = 0; bit < 20; ++bit) {
-            bool bit_value = (data >> bit) & 1;
             uint8_t left1 = separated.ether_amplitudes[bit * 2];
             uint8_t right1 = separated.ether_amplitudes[bit * 2 + 1];
             uint8_t left2 = separated.ether_amplitudes[40 + bit * 2];
             uint8_t right2 = separated.ether_amplitudes[40 + bit * 2 + 1];
             
-            bool decoded1 = (left1 > threshold_ && right1 <= threshold_) ? false :
-                           (left1 <= threshold_ && right1 > threshold_) ? true : false;
-            bool decoded2 = (left2 > threshold_ && right2 <= threshold_) ? false :
-                           (left2 <= threshold_ && right2 > threshold_) ? true : false;
+            double conf1, conf2;
+            auto val1 = decode_uvd_bit(left1, right1, threshold_, conf1);
+            auto val2 = decode_uvd_bit(left2, right2, threshold_, conf2);
             
-            if (decoded1 != decoded2) {
+            if (val1.has_value() && val2.has_value() && val1.value() != val2.value()) {
+                error_mask |= (1 << bit);
+            } else if (!val1.has_value() || !val2.has_value()) {
+                // Если одно из повторений неопределено - считаем ошибкой
                 error_mask |= (1 << bit);
             }
         }
@@ -560,7 +637,7 @@ SeparationResult<UVDReply> IterativeSubtractionSolver::separate_uvd(
         auto dominant = find_dominant_reply(current);
         if (!dominant) break;
         
-        // Декодируем данные из доминирующего ответа
+        // Декодируем данные из доминирующего ответа с использованием улучшенной логики
         uint32_t data = 0;
         for (int bit = 0; bit < 20; ++bit) {
             uint8_t left1 = dominant->ether_amplitudes[bit * 2];
@@ -568,41 +645,45 @@ SeparationResult<UVDReply> IterativeSubtractionSolver::separate_uvd(
             uint8_t left2 = dominant->ether_amplitudes[40 + bit * 2];
             uint8_t right2 = dominant->ether_amplitudes[40 + bit * 2 + 1];
             
-            bool bit1 = (left1 > config_.min_amplitude * 3 && 
-                        right1 <= config_.min_amplitude * 3) ? false :
-                       (left1 <= config_.min_amplitude * 3 && 
-                        right1 > config_.min_amplitude * 3) ? true : false;
-            bool bit2 = (left2 > config_.min_amplitude * 3 && 
-                        right2 <= config_.min_amplitude * 3) ? false :
-                       (left2 <= config_.min_amplitude * 3 && 
-                        right2 > config_.min_amplitude * 3) ? true : false;
+            double conf1, conf2;
+            auto val1 = decode_uvd_bit(left1, right1, config_.min_amplitude * 3, conf1);
+            auto val2 = decode_uvd_bit(left2, right2, config_.min_amplitude * 3, conf2);
             
-            // Голосование - если оба повторения согласованы
-            if (bit1 && bit2) {
+            // Голосование с учетом уверенности
+            double vote_for_one = 0.0;
+            double vote_for_zero = 0.0;
+            
+            if (val1.has_value()) {
+                if (val1.value()) vote_for_one += conf1;
+                else vote_for_zero += conf1;
+            }
+            if (val2.has_value()) {
+                if (val2.value()) vote_for_one += conf2;
+                else vote_for_zero += conf2;
+            }
+            
+            if (vote_for_one > vote_for_zero && vote_for_one > 0.3) {
                 data |= (1 << bit);
-            } else if (bit1 || bit2) {
-                // Только одно повторение - берем его
-                if (bit1) data |= (1 << bit);
-                else if (bit2) data |= (1 << bit);
             }
         }
         dominant->data20 = data;
         
-        // Вычисляем ошибки
+        // Вычисляем ошибки с использованием улучшенной логики
         uint32_t error_mask = 0;
         for (int bit = 0; bit < 20; ++bit) {
-            bool bit_value = (data >> bit) & 1;
             uint8_t left1 = dominant->ether_amplitudes[bit * 2];
             uint8_t right1 = dominant->ether_amplitudes[bit * 2 + 1];
             uint8_t left2 = dominant->ether_amplitudes[40 + bit * 2];
             uint8_t right2 = dominant->ether_amplitudes[40 + bit * 2 + 1];
             
-            bool decoded1 = (left1 > threshold_for_uvd_ && right1 <= threshold_for_uvd_) ? false :
-                           (left1 <= threshold_for_uvd_ && right1 > threshold_for_uvd_) ? true : false;
-            bool decoded2 = (left2 > threshold_for_uvd_ && right2 <= threshold_for_uvd_) ? false :
-                           (left2 <= threshold_for_uvd_ && right2 > threshold_for_uvd_) ? true : false;
+            double conf1, conf2;
+            auto val1 = decode_uvd_bit(left1, right1, threshold_for_uvd_, conf1);
+            auto val2 = decode_uvd_bit(left2, right2, threshold_for_uvd_, conf2);
             
-            if (decoded1 != decoded2) {
+            if (val1.has_value() && val2.has_value() && val1.value() != val2.value()) {
+                error_mask |= (1 << bit);
+            } else if (!val1.has_value() || !val2.has_value()) {
+                // Если одно из повторений неопределено - считаем ошибкой
                 error_mask |= (1 << bit);
             }
         }

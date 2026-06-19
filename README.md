@@ -908,3 +908,206 @@ text
 ./tools/1_generate_replies ../config/radar.json 300 replies.txt
 ./tools/2_3_combined ../config/radar.json replies.txt plots_combined.txt
 ./tools/4_radar_player replies.txt plots_combined.txt tracks_combined.txt
+
+
+Проблемы и предложения по улучшению
+🔴 Критические проблемы
+1. Дублирование кода в Kalman Filter
+
+В kalman_filter.cpp и tracker.cpp есть дублирование класса RevolutionKalmanFilter. Это серьезная проблема:
+cpp
+
+// kalman_filter.cpp - НЕПРАВИЛЬНО: дублирует реализацию
+void RevolutionKalmanFilter::init(...) { ... }
+
+// tracker.cpp - ТОЖЕ САМЫЙ КОД (дублирование!)
+void RevolutionKalmanFilter::init(...) { ... }
+
+Решение: Удалить дублирование из tracker.cpp и использовать реализацию из kalman_filter.cpp.
+2. Утечка памяти в 4_radar_player.cpp
+
+В функции draw_track_label создаются текстуры, но не всегда корректно освобождаются:
+cpp
+
+// 4_radar_player.cpp, стр. ~340
+SDL_Texture* texture = SDL_CreateTextureFromSurface(renderer_, surface);
+// ... использование ...
+// НЕТ SDL_DestroyTexture(texture) в некоторых путях
+
+Решение: Использовать RAII-обертку для SDL ресурсов.
+3. Неопределенное поведение в garbling_solver.cpp
+cpp
+
+// garbling_solver.cpp, стр. ~240
+bool bit1 = (left1 > threshold_ && right1 <= threshold_) ? false :
+            (left1 <= threshold_ && right1 > threshold_) ? true : false;
+// Если оба условия ложны, bit1 = false, но логика не полная
+
+Решение: Явно обрабатывать все случаи.
+🟡 Важные улучшения
+4. Отсутствие юнит-тестов
+
+Проект имеет опцию BUILD_TESTS, но тесты не реализованы.
+
+Предложение: Добавить тесты для:
+
+    ConfigLoader::parse_config()
+
+    RevolutionKalmanFilter::predict/update()
+
+    ClusterTracker::process_scan()
+
+    ReplyProcessor::decode_rbs_with_errors()
+
+cpp
+
+// Пример теста
+TEST(KalmanFilter, PredictPosition) {
+    RevolutionKalmanFilter filter(0.1, 1.0);
+    filter.init(100, 100, 0);
+    filter.update(120, 120, 10);
+    auto [x, y] = filter.predict_position(5);
+    EXPECT_GT(x, 100);
+    EXPECT_GT(y, 100);
+}
+
+5. Использование std::endl вместо \n
+cpp
+
+// logger.cpp
+file_ << formatted << std::endl;  // Вызывает flush() каждый раз
+
+Решение: Использовать '\n' для производительности.
+6. Магические числа
+cpp
+
+// cluster.cpp
+if (azimuth % 128 == 0) { ... }  // Почему 128?
+if (reply_count >= 2) { ... }     // Почему 2?
+
+Решение: Вынести в конфигурацию или константы с именами.
+7. Отсутствие обработки ошибок в ConfigLoader
+cpp
+
+if (r.contains("snr_db")) config.simulator.rbs.snr_db = r["snr_db"].get<double>();
+// Нет проверки на отрицательные значения или другие некорректные данные
+
+🟢 Оптимизации
+8. Копирование больших объектов
+cpp
+
+// cluster.cpp
+std::vector<RBSReply> get_all_rbs() const {
+    std::vector<RBSReply> result;
+    for (const auto& scan : scans) {
+        result.insert(result.end(), scan.rbs_replies.begin(), scan.rbs_replies.end());
+    }
+    return result;  // Копирование при возврате
+}
+
+Решение: Использовать move-семантику или возвращать const std::vector&.
+9. Линейный поиск в ClusterProcessor::group_by_range
+cpp
+
+// O(n²) сложность
+for (auto& [nominal, group] : range_map) {
+    if (std::abs(reply.range - nominal) <= range_tolerance_) {
+        group.add_rbs(&reply);
+        added = true;
+        break;
+    }
+}
+
+Решение: Использовать std::multimap или сортировку.
+10. Избыточное логирование в TRACE
+
+Макрос VRL_LOG_TRACE вызывается в циклах, что может замедлять работу.
+
+Решение: Условная компиляция для TRACE уровня.
+📝 Документация
+11. Неполная документация API
+
+Многие публичные методы не имеют комментариев.
+
+Решение: Добавить Doxygen-комментарии для всех публичных интерфейсов:
+cpp
+
+/**
+ * @brief Обрабатывает сканирование радара
+ * @param scan Данные сканирования
+ * @return Вектор обнаруженных целей
+ * @note Вызывается для каждого оборота антенны
+ */
+std::vector<TargetReport> process_scan(const ScanReplies& scan);
+
+🔧 Архитектурные улучшения
+12. Использование интерфейсов вместо конкретных типов
+
+Сейчас трекер жестко привязан к RevolutionKalmanFilter.
+
+Решение: Создать интерфейс ITrackerFilter:
+cpp
+
+class ITrackerFilter {
+public:
+    virtual void init(double x, double y, uint32_t rev) = 0;
+    virtual void predict(uint32_t delta) = 0;
+    virtual void update(double x, double y, uint32_t rev) = 0;
+    virtual ~ITrackerFilter() = default;
+};
+
+13. Разделение ответственности в ClusterProcessor
+
+Класс делает слишком много: группировка, обработка RBS, обработка UVD, обработка перекрытий.
+
+Решение: Выделить отдельные классы:
+
+    RangeGrouper - группировка по дальности
+
+    RBSProcessor - обработка RBS ответов
+
+    UVDProcessor - обработка UVD ответов
+
+📊 Дополнительные предложения
+14. Метрики производительности
+
+Добавить сбор метрик:
+
+    Количество обработанных ответов/сек
+
+    Время обработки сканирования
+
+    Загрузка CPU
+
+15. Сериализация треков
+
+Сохранять треки в JSON для последующего анализа.
+16. Поддержка реального времени
+
+Сейчас система работает в симуляционном времени. Добавить режим реального времени с приемом данных по сети.
+17. Экспорт в KML/GPX
+
+Для визуализации треков на карте.
+Итоговый список приоритетов
+Приоритет	Задача	Сложность
+🔴 HIGH	Удалить дублирование Kalman Filter	1 час
+🔴 HIGH	Исправить утечку памяти в SDL	2 часа
+🟡 MEDIUM	Добавить юнит-тесты	8 часов
+🟡 MEDIUM	Устранить магические числа	2 часа
+🟡 MEDIUM	Добавить Doxygen документацию	4 часа
+🟢 LOW	Оптимизировать группировку по диапазонам	4 часа
+🟢 LOW	Рефакторинг ClusterProcessor	8 часов
+🟢 LOW	Добавить экспорт в KML	4 часа
+Заключение
+
+Проект находится в хорошем состоянии и готов к использованию. Основные проблемы — дублирование кода, потенциальные утечки памяти и отсутствие тестов. Рекомендую:
+
+    Немедленно исправить дублирование Kalman Filter и утечки памяти
+
+    В ближайшее время добавить юнит-тесты для критических компонентов
+
+    Постепенно улучшить документацию и архитектуру
+
+Проект демонстрирует высокий уровень владения C++ и понимания предметной области. Система логирования, конфигурация и визуализация выполнены на профессиональном уровне.
+
+===============================
