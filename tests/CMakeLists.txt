@@ -122,3 +122,27 @@ add_test(NAME test_tracker_filter
     COMMAND test_tracker_filter
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/tests
 )
+
+# Тест для Clusterer
+add_executable(test_clusterer
+    test_clusterer.cpp
+)
+
+target_link_libraries(test_clusterer
+    vrl_radar
+    GTest::gtest_main
+)
+
+target_compile_definitions(test_clusterer
+    PRIVATE
+        $<$<BOOL:${ENABLE_VERBOSE_LOGGING}>:ENABLE_VERBOSE_LOGGING>
+)
+
+set_target_properties(test_clusterer PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests"
+)
+
+add_test(NAME test_clusterer 
+    COMMAND test_clusterer
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/tests
+)

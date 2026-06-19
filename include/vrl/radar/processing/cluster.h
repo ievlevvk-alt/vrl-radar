@@ -9,6 +9,8 @@
 #include "range_grouper.h"
 #include "rbs_processor.h"
 #include "uvd_processor.h"
+#include "i_clusterer.h"
+#include "legacy_clusterer.h"
 #include <vector>
 #include <map>
 #include <set>
@@ -38,31 +40,11 @@ struct TargetCluster {
     void add_scan(const ScanReplies& scan);
     bool is_active(uint16_t current_azimuth, int max_gap_azimuth) const;
     
-    /**
-     * @brief Получить все RBS ответы (копирование с move)
-     * @return вектор RBS ответов
-     */
-    std::vector<RBSReply> get_all_rbs() &&;  // rvalue-ref версия (move)
-    
-    /**
-     * @brief Получить все RBS ответы (const ссылка)
-     * @return const ссылка на вектор RBS ответов
-     * @note Временный объект создается, используйте move-версию когда возможно
-     */
-    std::vector<RBSReply> get_all_rbs() const&;  // lvalue-ref версия (копирование)
-    
-    /**
-     * @brief Получить все UVD ответы (копирование с move)
-     * @return вектор UVD ответов
-     */
-    std::vector<UVDReply> get_all_uvd() &&;  // rvalue-ref версия (move)
-    
-    /**
-     * @brief Получить все UVD ответы (const ссылка)
-     * @return const ссылка на вектор UVD ответов
-     * @note Временный объект создается, используйте move-версию когда возможно
-     */
-    std::vector<UVDReply> get_all_uvd() const&;  // lvalue-ref версия (копирование)
+    // Move-версии
+    std::vector<RBSReply> get_all_rbs() &&;
+    std::vector<RBSReply> get_all_rbs() const&;
+    std::vector<UVDReply> get_all_uvd() &&;
+    std::vector<UVDReply> get_all_uvd() const&;
     
     uint16_t azimuth_span() const;
     uint16_t range_span() const;
@@ -70,31 +52,66 @@ struct TargetCluster {
 };
 
 // ============================================================================
-// CLUSTER TRACKER
+// CLUSTER TRACKER - ИСПОЛЬЗУЕТ IClusterer
 // ============================================================================
 
 class ClusterTracker {
 public:
+    /**
+     * @brief Конструктор с параметрами по умолчанию (LegacyClusterer)
+     */
     ClusterTracker(int max_gap_azimuth = 8, int range_window = 30);
     
+    /**
+     * @brief Конструктор с пользовательским кластеризатором
+     * @param clusterer уникальный указатель на кластеризатор
+     */
+    explicit ClusterTracker(std::unique_ptr<IClusterer> clusterer);
+    
+    ~ClusterTracker() = default;
+    
+    /**
+     * @brief Обработать сканирование
+     */
     void process_scan(const ScanReplies& scan);
+    
+    /**
+     * @brief Получить завершенные кластеры
+     */
     std::vector<TargetCluster> get_completed_clusters();
+    
+    /**
+     * @brief Получить активные кластеры
+     */
     const std::vector<TargetCluster>& get_active_clusters() const;
+    
+    /**
+     * @brief Сбросить все кластеры
+     */
     void reset();
     
-    void set_max_gap_azimuth(int gap) { max_gap_azimuth_ = gap; }
-    void set_range_window(int window) { range_window_ = window; }
+    /**
+     * @brief Заменить кластеризатор
+     * @param clusterer новый кластеризатор
+     */
+    void set_clusterer(std::unique_ptr<IClusterer> clusterer);
+    
+    /**
+     * @brief Получить текущий кластеризатор
+     */
+    IClusterer* get_clusterer() const { return clusterer_.get(); }
+    
+    /**
+     * @brief Получить имя используемого алгоритма
+     */
+    std::string get_algorithm_name() const;
+    
+    // Для обратной совместимости
+    void set_max_gap_azimuth(int gap);
+    void set_range_window(int window);
     
 private:
-    void update_existing_clusters(const ScanReplies& scan);
-    void try_create_new_clusters(const ScanReplies& scan);
-    void complete_expired_clusters(uint16_t current_azimuth);
-    
-    std::vector<TargetCluster> active_clusters_;
-    std::vector<TargetCluster> completed_clusters_;
-    
-    int max_gap_azimuth_;
-    int range_window_;
+    std::unique_ptr<IClusterer> clusterer_;
 };
 
 // ============================================================================
@@ -130,11 +147,6 @@ public:
     RangeGrouper& get_range_grouper() { return range_grouper_; }
     
 private:
-    /**
-     * @brief Обработать группу с перекрытием (garbled)
-     * @param group группа ответов
-     * @return вектор отчетов о целях
-     */
     std::vector<TargetReport> process_garbled_group(const RangeGrouper::RangeGroup& group);
     
     RadarConfig config_;

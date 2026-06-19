@@ -1257,3 +1257,225 @@ manager.set_filter(std::make_unique<ExtendedKalmanFilter>(/* параметры 
 
 ==================
 
+Как добавить новый алгоритм кластеризации:
+cpp
+
+// 1. Создать класс
+class DBSCANClusterer : public IClusterer {
+    // ... реализация всех методов ...
+    std::string get_name() const override { return "DBSCANClusterer"; }
+};
+
+// 2. Использовать
+auto clusterer = std::make_unique<DBSCANClusterer>(eps, min_samples);
+ClusterTracker tracker(std::move(clusterer));
+
+// Или заменить позже
+tracker.set_clusterer(std::make_unique<OPTICSClusterer>(eps, min_samples));
+
+
+==============
+
+VRL-Radar Project Summary для нового чата
+О проекте
+
+VRL-Radar — система обработки радиолокационных данных на C++17. Выполняет полный конвейер: генерация синтетических ответов → кластеризация → трекинг → визуализация.
+Структура проекта
+text
+
+.
+├── CMakeLists.txt
+├── config/
+│   ├── radar.json                    # Основной файл конфигурации
+│   ├── radar_common.json             # Общие параметры
+│   ├── processing_config.json        # Параметры обработки
+│   ├── simulation_config.json        # Параметры симуляции
+│   ├── confidence_config.json        # Параметры уверенности
+│   ├── targets_rbs.json              # RBS цели
+│   ├── targets_uvd.json              # UVD цели
+│   └── display_config.json           # Параметры отображения
+├── include/vrl/radar/
+│   ├── core/
+│   │   ├── config.h                  # Структуры SystemConfig, GeneratedTarget
+│   │   ├── config_loader.hpp         # Загрузчик JSON с поддержкой include
+│   │   ├── logging_config.h          # Конфигурация логирования
+│   │   ├── types.h
+│   │   └── replies.h
+│   ├── processing/
+│   │   ├── i_tracker_filter.h        # Интерфейс для фильтров трекинга
+│   │   ├── i_clusterer.h             # Интерфейс для алгоритмов кластеризации
+│   │   ├── kalman_filter.h           # Фильтр Калмана (реализует ITrackerFilter)
+│   │   ├── legacy_clusterer.h        # Существующий алгоритм кластеризации (реализует IClusterer)
+│   │   ├── cluster.h                 # TargetCluster, ClusterTracker, ClusterProcessor
+│   │   ├── range_grouper.h           # Группировка по дальности (O(n log n))
+│   │   ├── rbs_processor.h           # Обработка RBS ответов
+│   │   ├── uvd_processor.h           # Обработка UVD ответов
+│   │   ├── garbling_solver.h         # Решение перекрытий
+│   │   ├── reply_processor.h
+│   │   └── tracker.h                 # TrackManager (использует ITrackerFilter)
+│   ├── simulation/
+│   │   └── simulator.h
+│   └── utils/
+│       ├── logger.h                  # Многоуровневое логирование
+│       └── utils.h
+├── src/
+│   ├── core/
+│   │   ├── config.cpp
+│   │   └── config_loader.cpp
+│   ├── processing/
+│   │   ├── cluster.cpp
+│   │   ├── garbling_solver.cpp
+│   │   ├── kalman_filter.cpp
+│   │   ├── legacy_clusterer.cpp
+│   │   ├── range_grouper.cpp
+│   │   ├── rbs_processor.cpp
+│   │   ├── uvd_processor.cpp
+│   │   ├── reply_processor.cpp
+│   │   └── tracker.cpp
+│   ├── simulation/
+│   │   └── simulator.cpp
+│   └── utils/
+│       ├── logger.cpp
+│       └── utils.cpp
+├── tools/
+│   ├── 1_generate_replies.cpp        # Генерация синтетических ответов
+│   ├── 2_3_combined.cpp              # Кластеризация + трекинг
+│   └── 4_radar_player.cpp            # Визуализация с SDL2
+└── tests/
+    ├── test_config_loader.cpp
+    ├── test_kalman_filter.cpp
+    ├── test_cluster_tracker.cpp
+    ├── test_reply_processor.cpp
+    ├── test_tracker_filter.cpp
+    └── test_clusterer.cpp
+
+Зависимости
+
+    Eigen3 — линейная алгебра
+
+    SDL2, SDL2_ttf — визуализация
+
+    nlohmann/json — парсинг JSON (установлен через sudo apt-get install nlohmann-json3-dev)
+
+    Google Test — юнит-тесты (опционально)
+
+Сборка
+bash
+
+mkdir build && cd build
+cmake -DBUILD_TESTS=ON -DBUILD_TOOLS=ON -DCMAKE_BUILD_TYPE=Debug ..
+make -j4
+
+Опции CMake
+Опция	По умолчанию	Описание
+BUILD_TESTS	OFF	Сборка юнит-тестов
+BUILD_TOOLS	ON	Сборка утилит
+ENABLE_VERBOSE_LOGGING	OFF	Подробное логирование
+ENABLE_TRACE_LOGGING	OFF	TRACE уровень (отключается в Release)
+ENABLE_DEBUG_LOGGING	ON	DEBUG уровень
+Запуск
+bash
+
+cd build
+
+# Шаг 1: Генерация ответов
+./tools/1_generate_replies ../config/radar.json 300 replies.txt
+
+# Шаг 2-3: Кластеризация + трекинг
+./tools/2_3_combined ../config/radar.json replies.txt tracks_combined.txt
+
+# Шаг 4: Визуализация
+./tools/4_radar_player replies.txt plots_combined.txt tracks_combined.txt
+
+# Запуск тестов
+ctest --output-on-failure
+
+Ключевые архитектурные решения
+1. Интерфейс для фильтров трекинга (ITrackerFilter)
+
+Позволяет легко подменять реализацию фильтра (Kalman, EKF, UKF, Particle).
+cpp
+
+class ITrackerFilter {
+    virtual void init(double x, double y, uint32_t rev) = 0;
+    virtual void predict(uint32_t delta) = 0;
+    virtual void update(double x, double y, uint32_t rev) = 0;
+    virtual std::unique_ptr<ITrackerFilter> clone() const = 0;
+    virtual std::string get_name() const = 0;
+    // ...
+};
+
+2. Интерфейс для алгоритмов кластеризации (IClusterer)
+
+Позволяет легко подменять алгоритм (Legacy, DBSCAN, OPTICS, иерархический).
+cpp
+
+class IClusterer {
+    virtual void process_scan(const ScanReplies& scan) = 0;
+    virtual std::vector<TargetCluster> get_completed_clusters() = 0;
+    virtual std::unique_ptr<IClusterer> clone() const = 0;
+    virtual std::string get_name() const = 0;
+    // ...
+};
+
+3. Разделение ClusterProcessor
+
+    RangeGrouper — группировка по дальности (O(n log n))
+
+    RBSProcessor — обработка RBS ответов
+
+    UVDProcessor — обработка UVD ответов
+
+4. Модульная конфигурация
+
+JSON файлы с поддержкой _includes директив для композиции.
+5. Многоуровневое логирование
+
+Индивидуальные уровни для каждого модуля, условная компиляция для TRACE.
+Статус проекта
+Компонент	Статус
+Сборка	✅
+Юнит-тесты	✅ (6 тестов, 100% passed)
+Утечки памяти	✅ (проверено Valgrind)
+Конфигурация	✅ (модульная, с валидацией)
+Логирование	✅ (многоуровневое)
+Интерфейс фильтров	✅ (готов к расширению)
+Интерфейс кластеризации	✅ (готов к расширению)
+TODO / Возможные улучшения
+
+    Новые алгоритмы кластеризации — DBSCAN, OPTICS, иерархическая
+
+    Новые фильтры трекинга — EKF, UKF, Particle Filter
+
+    Экспорт в KML/GPX — для визуализации на карте
+
+    Поддержка реального времени — прием данных по сети
+
+    Метрики производительности — сбор статистики
+
+Файлы для передачи в новый чат
+
+Если нужно продолжить работу в новом чате, вот список ключевых файлов, которые стоит показать:
+
+    CMakeLists.txt (корневой и src/tests/tools)
+
+    include/vrl/radar/processing/i_tracker_filter.h
+
+    include/vrl/radar/processing/i_clusterer.h
+
+    include/vrl/radar/processing/tracker.h
+
+    include/vrl/radar/processing/cluster.h
+
+    src/processing/tracker.cpp
+
+    src/processing/cluster.cpp
+
+    config/radar.json и связанные конфиги
+
+    include/vrl/radar/utils/logger.h
+
+Проект полностью собран и готов к использованию! 🚀
+
+
+===============

@@ -6,6 +6,7 @@ add_library(vrl_radar STATIC
     processing/cluster.cpp
     processing/garbling_solver.cpp
     processing/kalman_filter.cpp
+    processing/legacy_clusterer.cpp      # <-- ДОБАВЛЯЕМ
     processing/range_grouper.cpp
     processing/rbs_processor.cpp
     processing/uvd_processor.cpp
