@@ -42,12 +42,18 @@ find_path(NLOHMANN_INCLUDE_DIR
 
 if(NLOHMANN_INCLUDE_DIR)
     message(STATUS "Found nlohmann/json in: ${NLOHMANN_INCLUDE_DIR}")
-    # Создаем интерфейсную библиотеку
     add_library(nlohmann_json INTERFACE)
     target_include_directories(nlohmann_json INTERFACE ${NLOHMANN_INCLUDE_DIR})
     set(NLOHMANN_FOUND TRUE)
 else()
     message(FATAL_ERROR "nlohmann/json not found. Please install: sudo apt-get install nlohmann-json3-dev")
+endif()
+
+# Google Test (только если BUILD_TESTS включен)
+if(BUILD_TESTS)
+    find_package(GTest REQUIRED)
+    include(GoogleTest)
+    enable_testing()
 endif()
 
 # ============================================================================
@@ -79,7 +85,6 @@ if(BUILD_TOOLS)
 endif()
 
 if(BUILD_TESTS)
-    enable_testing()
     add_subdirectory(tests)
 endif()
 
