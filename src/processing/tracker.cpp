@@ -23,7 +23,8 @@ TrackManager::TrackManager(const TrackerConfig& config)
     VRL_LOG_DEBUG(modules::TRACKER, "Config: min_hits=" + std::to_string(config.min_hits_to_confirm) +
                   ", max_coast=" + std::to_string(config.max_coast_count) +
                   ", gate_dist=" + std::to_string(config.max_gate_distance) +
-                  ", gate_az=" + std::to_string(config.max_gate_azimuth));
+                  ", gate_az=" + std::to_string(config.max_gate_azimuth) +
+                  ", max_history=" + std::to_string(max_history_size_));
 }
 
 TrackManager::TrackManager(const TrackerConfig& config, 
@@ -35,7 +36,8 @@ TrackManager::TrackManager(const TrackerConfig& config,
     VRL_LOG_DEBUG(modules::TRACKER, "Config: min_hits=" + std::to_string(config.min_hits_to_confirm) +
                   ", max_coast=" + std::to_string(config.max_coast_count) +
                   ", gate_dist=" + std::to_string(config.max_gate_distance) +
-                  ", gate_az=" + std::to_string(config.max_gate_azimuth));
+                  ", gate_az=" + std::to_string(config.max_gate_azimuth) +
+                  ", max_history=" + std::to_string(max_history_size_));
 }
 
 void TrackManager::set_filter(std::unique_ptr<ITrackerFilter> filter) {
@@ -168,7 +170,8 @@ void TrackManager::update_tracks(const std::vector<TargetReport>& targets, uint3
                 track.state = TrackState::ACTIVE;
                 VRL_LOG_INFO(modules::TRACKER, "Track " + std::to_string(track.id) + 
                              " confirmed at rev " + std::to_string(revolution) +
-                             " (hits=" + std::to_string(track.hit_count) + ")");
+                             " (hits=" + std::to_string(track.hit_count) + 
+                             ", history=" + std::to_string(track.history.size()) + ")");
             }
         } else {
             track.coast_count += (delta_rev > 0) ? delta_rev : 1;
@@ -177,7 +180,8 @@ void TrackManager::update_tracks(const std::vector<TargetReport>& targets, uint3
             if (track.coast_count >= config_.max_coast_count) {
                 track.state = TrackState::DROPPED;
                 VRL_LOG_DEBUG(modules::TRACKER, "Track " + std::to_string(track.id) + 
-                              " dropped (coast=" + std::to_string(track.coast_count) + ")");
+                              " dropped (coast=" + std::to_string(track.coast_count) + 
+                              ", history=" + std::to_string(track.history.size()) + ")");
             } else if (track.state == TrackState::ACTIVE && track.coast_count > 0) {
                 track.state = TrackState::COASTING;
                 VRL_LOG_DEBUG(modules::TRACKER, "Track " + std::to_string(track.id) + 
@@ -256,7 +260,8 @@ void TrackManager::create_new_tracks(const std::vector<TargetReport>& targets, u
             
             VRL_LOG_DEBUG(modules::TRACKER, "Created new track " + std::to_string(new_track.id) + 
                           " at rev " + std::to_string(revolution) +
-                          " pos=(" + std::to_string(target.x) + ", " + std::to_string(target.y) + ")");
+                          " pos=(" + std::to_string(target.x) + ", " + std::to_string(target.y) + ")" +
+                          " history_size=" + std::to_string(new_track.history.size()));
         }
     }
     

@@ -11,15 +11,181 @@
 #include <memory>
 #include <optional>
 #include <cstddef>
+#include <array>    // <-- ДОБАВЛЯЕМ для кольцевого буфера
 
 namespace vrl {
 namespace radar {
+
+// ============================================================================
+// КОЛЬЦЕВОЙ БУФЕР ДЛЯ ИСТОРИИ ТРЕКОВ
+// ============================================================================
+
+/**
+ * @brief Кольцевой буфер фиксированного размера для хранения истории треков
+ * 
+ * Преимущества:
+ * - O(1) добавление и удаление
+ * - Фиксированное использование памяти
+ * - Без переаллокаций
+ */
+template<typename T, size_t MaxSize = 10>
+class CircularHistory {
+public:
+    static constexpr size_t MAX_SIZE = MaxSize;
+    
+    CircularHistory() = default;
+    
+    /**
+     * @brief Добавить элемент в историю
+     * @param item элемент для добавления
+     * @return true если элемент был добавлен
+     */
+    bool push(const T& item) {
+        if (size_ < MAX_SIZE) {
+            // Заполняем до MAX_SIZE
+            data_[size_++] = item;
+            return true;
+        } else {
+            // Перезаписываем самый старый элемент
+            data_[head_] = item;
+            head_ = (head_ + 1) % MAX_SIZE;
+            return true;
+        }
+    }
+    
+    /**
+     * @brief Добавить элемент с перемещением
+     */
+    bool push(T&& item) {
+        if (size_ < MAX_SIZE) {
+            data_[size_++] = std::move(item);
+            return true;
+        } else {
+            data_[head_] = std::move(item);
+            head_ = (head_ + 1) % MAX_SIZE;
+            return true;
+        }
+    }
+    
+    /**
+     * @brief Получить все элементы в порядке добавления
+     */
+    std::vector<T> get_all() const {
+        std::vector<T> result;
+        result.reserve(size_);
+        
+        if (size_ == 0) return result;
+        
+        // Идем с head_ до конца
+        for (size_t i = 0; i < size_; ++i) {
+            size_t idx = (head_ + i) % MAX_SIZE;
+            result.push_back(data_[idx]);
+        }
+        
+        return result;
+    }
+    
+    /**
+     * @brief Получить последний добавленный элемент
+     */
+    const T* back() const {
+        if (size_ == 0) return nullptr;
+        size_t idx = (head_ + size_ - 1) % MAX_SIZE;
+        return &data_[idx];
+    }
+    
+    /**
+     * @brief Получить первый (самый старый) элемент
+     */
+    const T* front() const {
+        if (size_ == 0) return nullptr;
+        return &data_[head_];
+    }
+    
+    /**
+     * @brief Получить элемент по индексу (0 = самый старый)
+     */
+    const T* get(size_t index) const {
+        if (index >= size_) return nullptr;
+        size_t idx = (head_ + index) % MAX_SIZE;
+        return &data_[idx];
+    }
+    
+    /**
+     * @brief Получить размер истории
+     */
+    size_t size() const { return size_; }
+    
+    /**
+     * @brief Проверить, пуста ли история
+     */
+    bool empty() const { return size_ == 0; }
+    
+    /**
+     * @brief Получить максимальный размер
+     */
+    constexpr size_t max_size() const { return MAX_SIZE; }
+    
+    /**
+     * @brief Очистить историю
+     */
+    void clear() {
+        size_ = 0;
+        head_ = 0;
+        // Не нужно очищать data_, она будет перезаписана
+    }
+    
+    /**
+     * @brief Проверить, заполнена ли история
+     */
+    bool is_full() const { return size_ == MAX_SIZE; }
+    
+    /**
+     * @brief Итератор для поддержки range-based for
+     */
+    class Iterator {
+    public:
+        Iterator(const CircularHistory* history, size_t pos)
+            : history_(history), pos_(pos) {}
+        
+        Iterator& operator++() {
+            if (pos_ < history_->size_) {
+                pos_++;
+            }
+            return *this;
+        }
+        
+        const T& operator*() const {
+            size_t idx = (history_->head_ + pos_) % history_->MAX_SIZE;
+            return history_->data_[idx];
+        }
+        
+        bool operator!=(const Iterator& other) const {
+            return pos_ != other.pos_ || history_ != other.history_;
+        }
+        
+    private:
+        const CircularHistory* history_;
+        size_t pos_;
+    };
+    
+    Iterator begin() const { return Iterator(this, 0); }
+    Iterator end() const { return Iterator(this, size_); }
+    
+private:
+    std::array<T, MAX_SIZE> data_{};
+    size_t head_{0};
+    size_t size_{0};
+};
 
 // ============================================================================
 // TRACK
 // ============================================================================
 
 struct Track {
+    // Константы по умолчанию
+    static constexpr size_t DEFAULT_MAX_HISTORY = 20;
+    
     uint64_t id{0};
     TrackState state{TrackState::NEW};
     
@@ -47,18 +213,50 @@ struct Track {
     bool code_reliable{true};
     bool altitude_reliable{true};
     
-    std::vector<TargetReport> history;
-    size_t max_history{10};
+    // ИСПРАВЛЕНО: используем кольцевой буфер вместо вектора
+    CircularHistory<TargetReport, DEFAULT_MAX_HISTORY> history;
     
+    /**
+     * @brief Добавить отчет в историю
+     * @param report отчет для добавления
+     */
     void add_history(const TargetReport& report) {
-        history.push_back(report);
-        if (history.size() > max_history) {
-            history.erase(history.begin());
-        }
+        history.push(report);
     }
     
+    /**
+     * @brief Получить всю историю как вектор
+     */
+    std::vector<TargetReport> get_history() const {
+        return history.get_all();
+    }
+    
+    /**
+     * @brief Получить последний отчет
+     */
+    const TargetReport* get_last_report() const {
+        return history.back();
+    }
+    
+    /**
+     * @brief Проверить, подтвержден ли трек
+     */
     bool is_confirmed() const {
         return hit_count >= 3 && state == TrackState::ACTIVE;
+    }
+    
+    /**
+     * @brief Получить размер истории
+     */
+    size_t history_size() const {
+        return history.size();
+    }
+    
+    /**
+     * @brief Очистить историю
+     */
+    void clear_history() {
+        history.clear();
     }
 };
 
@@ -129,6 +327,19 @@ public:
      */
     ITrackerFilter* get_filter() const { return default_filter_.get(); }
     
+    /**
+     * @brief Установить максимальный размер истории для новых треков
+     * @param max_size максимальный размер истории
+     */
+    void set_max_history_size(size_t max_size) {
+        max_history_size_ = max_size;
+    }
+    
+    /**
+     * @brief Получить максимальный размер истории
+     */
+    size_t get_max_history_size() const { return max_history_size_; }
+    
 private:
     struct TrackWithFilter {
         Track track;
@@ -157,6 +368,9 @@ private:
     
     // Фильтр по умолчанию (используется для создания новых)
     std::unique_ptr<ITrackerFilter> default_filter_;
+    
+    // Максимальный размер истории
+    size_t max_history_size_{Track::DEFAULT_MAX_HISTORY};
 };
 
 } // namespace radar
