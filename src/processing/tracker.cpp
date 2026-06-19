@@ -16,16 +16,18 @@ namespace radar {
 // ============================================================================
 
 TrackManager::TrackManager(const TrackerConfig& config) 
-    : config_(config)
-    , default_filter_(std::make_unique<RevolutionKalmanFilter>(
-          config.process_noise, config.measurement_noise)) {
-    VRL_LOG_INFO(modules::TRACKER, "TrackManager initialized with default Kalman filter");
+    : config_(config) {
+    // Инициализируем filter_type_ значением KALMAN по умолчанию
+    filter_type_ = FilterType::KALMAN;
+    default_filter_ = create_default_filter();
+    VRL_LOG_INFO(modules::TRACKER, "TrackManager initialized with filter: " + get_filter_name());
     VRL_LOG_DEBUG(modules::TRACKER, "Config: min_hits=" + std::to_string(config.min_hits_to_confirm) +
                   ", max_coast=" + std::to_string(config.max_coast_count) +
                   ", gate_dist=" + std::to_string(config.max_gate_distance) +
                   ", gate_az=" + std::to_string(config.max_gate_azimuth) +
                   ", max_history=" + std::to_string(max_history_size_));
 }
+
 
 TrackManager::TrackManager(const TrackerConfig& config, 
                            std::unique_ptr<ITrackerFilter> filter)
@@ -40,19 +42,50 @@ TrackManager::TrackManager(const TrackerConfig& config,
                   ", max_history=" + std::to_string(max_history_size_));
 }
 
+// src/processing/tracker.cpp - исправленный create_default_filter
+
+std::unique_ptr<ITrackerFilter> TrackManager::create_default_filter() const {
+    // Используем filter_type_ для создания правильного фильтра
+    return create_filter(filter_type_);
+}
+
+std::unique_ptr<ITrackerFilter> TrackManager::create_filter(FilterType type) const {
+    switch (type) {
+        case FilterType::EXTENDED_KALMAN:
+            VRL_LOG_DEBUG(modules::TRACKER, "Creating ExtendedKalmanFilter");
+            return std::make_unique<ExtendedKalmanFilter>(
+                config_.process_noise, config_.measurement_noise, true);
+        case FilterType::UNSCENTED_KALMAN:
+            VRL_LOG_DEBUG(modules::TRACKER, "Creating UnscentedKalmanFilter");
+            return std::make_unique<UnscentedKalmanFilter>(
+                config_.process_noise, config_.measurement_noise);
+        case FilterType::KALMAN:
+        default:
+            VRL_LOG_DEBUG(modules::TRACKER, "Creating RevolutionKalmanFilter");
+            return std::make_unique<RevolutionKalmanFilter>(
+                config_.process_noise, config_.measurement_noise);
+    }
+}
+
+void TrackManager::set_filter_type(FilterType type) {
+    filter_type_ = type;
+    // Создаем новый фильтр по умолчанию
+    default_filter_ = create_default_filter();
+    VRL_LOG_INFO(modules::TRACKER, "Filter type changed to: " + get_filter_name());
+}
+
+
+std::string TrackManager::get_filter_name() const {
+    if (default_filter_) {
+        return default_filter_->get_name();
+    }
+    return "none";
+}
+
 void TrackManager::set_filter(std::unique_ptr<ITrackerFilter> filter) {
     default_filter_ = std::move(filter);
     VRL_LOG_INFO(modules::TRACKER, "Filter changed to: " + 
                  (default_filter_ ? default_filter_->get_name() : "null"));
-}
-
-std::unique_ptr<ITrackerFilter> TrackManager::create_filter() const {
-    if (default_filter_) {
-        return default_filter_->clone();
-    }
-    // Fallback на Kalman фильтр
-    return std::make_unique<RevolutionKalmanFilter>(
-        config_.process_noise, config_.measurement_noise);
 }
 
 void TrackManager::process_targets(const std::vector<TargetReport>& targets, uint32_t revolution) {
@@ -82,7 +115,8 @@ void TrackManager::process_targets(const std::vector<TargetReport>& targets, uin
             else if (twf.track.state == TrackState::NEW) new_tracks++;
         }
         VRL_LOG_DEBUG(modules::TRACKER, "Track states: ACTIVE=" + std::to_string(confirmed) +
-                      ", COASTING=" + std::to_string(coasting) + ", NEW=" + std::to_string(new_tracks));
+                      ", COASTING=" + std::to_string(coasting) + ", NEW=" + std::to_string(new_tracks) +
+                      ", filter=" + get_filter_name());
     }
 }
 
@@ -171,7 +205,7 @@ void TrackManager::update_tracks(const std::vector<TargetReport>& targets, uint3
                 VRL_LOG_INFO(modules::TRACKER, "Track " + std::to_string(track.id) + 
                              " confirmed at rev " + std::to_string(revolution) +
                              " (hits=" + std::to_string(track.hit_count) + 
-                             ", history=" + std::to_string(track.history.size()) + ")");
+                             ", filter=" + filter.get_name() + ")");
             }
         } else {
             track.coast_count += (delta_rev > 0) ? delta_rev : 1;
@@ -181,7 +215,7 @@ void TrackManager::update_tracks(const std::vector<TargetReport>& targets, uint3
                 track.state = TrackState::DROPPED;
                 VRL_LOG_DEBUG(modules::TRACKER, "Track " + std::to_string(track.id) + 
                               " dropped (coast=" + std::to_string(track.coast_count) + 
-                              ", history=" + std::to_string(track.history.size()) + ")");
+                              ", filter=" + filter.get_name() + ")");
             } else if (track.state == TrackState::ACTIVE && track.coast_count > 0) {
                 track.state = TrackState::COASTING;
                 VRL_LOG_DEBUG(modules::TRACKER, "Track " + std::to_string(track.id) + 
@@ -240,6 +274,7 @@ void TrackManager::create_new_tracks(const std::vector<TargetReport>& targets, u
             new_track.hit_count = 1;
             new_track.coast_count = 0;
             new_track.confidence = 0.1;
+            new_track.filter_type = filter_type_;
             
             if (target.type == TargetReport::SourceType::RBS) {
                 new_track.mode3a_code = target.rbs.mode3a_code;
@@ -251,8 +286,7 @@ void TrackManager::create_new_tracks(const std::vector<TargetReport>& targets, u
             
             new_track.add_history(target);
             
-            // Создаем новый фильтр через фабрику
-            auto filter = create_filter();
+            auto filter = create_filter(filter_type_);
             filter->init(target.x, target.y, revolution);
             
             tracks_[new_track.id] = TrackWithFilter(new_track, std::move(filter));
@@ -261,7 +295,7 @@ void TrackManager::create_new_tracks(const std::vector<TargetReport>& targets, u
             VRL_LOG_DEBUG(modules::TRACKER, "Created new track " + std::to_string(new_track.id) + 
                           " at rev " + std::to_string(revolution) +
                           " pos=(" + std::to_string(target.x) + ", " + std::to_string(target.y) + ")" +
-                          " history_size=" + std::to_string(new_track.history.size()));
+                          " filter=" + get_filter_name());
         }
     }
     

@@ -1844,3 +1844,21 @@ class RadarAPI {
     Внедрить мониторинг и метрики
 
     =======================
+
+    Использование в коде
+cpp
+
+// Создание менеджера треков с фильтром по умолчанию (Kalman)
+TrackManager manager(config);
+
+// Переключение на Extended Kalman Filter
+manager.set_filter_type(FilterType::EXTENDED_KALMAN);
+
+// Переключение на Unscented Kalman Filter (экспериментальный)
+manager.set_filter_type(FilterType::UNSCENTED_KALMAN);
+
+// Переключение обратно на обычный Kalman Filter
+manager.set_filter_type(FilterType::KALMAN);
+
+=====================
+

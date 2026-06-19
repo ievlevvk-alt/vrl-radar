@@ -266,3 +266,76 @@ add_test(NAME test_object_pool
     COMMAND test_object_pool
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/tests
 )
+
+# НОВЫЙ ТЕСТ: ExtendedKalmanFilter
+add_executable(test_extended_kalman_filter
+    test_extended_kalman_filter.cpp
+)
+
+target_link_libraries(test_extended_kalman_filter
+    vrl_radar
+    GTest::gtest_main
+)
+
+target_compile_definitions(test_extended_kalman_filter
+    PRIVATE
+        $<$<BOOL:${ENABLE_VERBOSE_LOGGING}>:ENABLE_VERBOSE_LOGGING>
+)
+
+set_target_properties(test_extended_kalman_filter PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests"
+)
+
+add_test(NAME test_extended_kalman_filter 
+    COMMAND test_extended_kalman_filter
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/tests
+)
+
+# НОВЫЙ ТЕСТ: UnscentedKalmanFilter
+add_executable(test_unscented_kalman_filter
+    test_unscented_kalman_filter.cpp
+)
+
+target_link_libraries(test_unscented_kalman_filter
+    vrl_radar
+    GTest::gtest_main
+)
+
+target_compile_definitions(test_unscented_kalman_filter
+    PRIVATE
+        $<$<BOOL:${ENABLE_VERBOSE_LOGGING}>:ENABLE_VERBOSE_LOGGING>
+)
+
+set_target_properties(test_unscented_kalman_filter PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests"
+)
+
+add_test(NAME test_unscented_kalman_filter 
+    COMMAND test_unscented_kalman_filter
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/tests
+)
+
+# НОВЫЙ ТЕСТ: FilterSelection
+add_executable(test_filter_selection
+    test_filter_selection.cpp
+)
+
+target_link_libraries(test_filter_selection
+    vrl_radar
+    GTest::gtest_main
+)
+
+target_compile_definitions(test_filter_selection
+    PRIVATE
+        $<$<BOOL:${ENABLE_VERBOSE_LOGGING}>:ENABLE_VERBOSE_LOGGING>
+)
+
+set_target_properties(test_filter_selection PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests"
+)
+
+add_test(NAME test_filter_selection 
+    COMMAND test_filter_selection
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/tests
+)
+
