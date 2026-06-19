@@ -194,3 +194,27 @@ add_test(NAME test_circular_history
     COMMAND test_circular_history
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/tests
 )
+
+# Тест для ClusterCleanup
+add_executable(test_cluster_cleanup
+    test_cluster_cleanup.cpp
+)
+
+target_link_libraries(test_cluster_cleanup
+    vrl_radar
+    GTest::gtest_main
+)
+
+target_compile_definitions(test_cluster_cleanup
+    PRIVATE
+        $<$<BOOL:${ENABLE_VERBOSE_LOGGING}>:ENABLE_VERBOSE_LOGGING>
+)
+
+set_target_properties(test_cluster_cleanup PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests"
+)
+
+add_test(NAME test_cluster_cleanup 
+    COMMAND test_cluster_cleanup
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/tests
+)

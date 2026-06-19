@@ -2,7 +2,7 @@
 #pragma once
 
 #include "i_clusterer.h"
-#include "cluster.h"  // <-- ДОБАВЛЯЕМ
+#include "cluster.h"
 #include <vector>
 #include <map>
 #include <set>
@@ -46,8 +46,9 @@ public:
     void set_range_window(int window) { range_window_ = window; }
     
 private:
-    void update_existing_clusters(const ScanReplies& scan);
-    void try_create_new_clusters(const ScanReplies& scan);
+    // ИСПРАВЛЕНО: добавлен параметр revolution
+    void update_existing_clusters(const ScanReplies& scan, uint32_t revolution);
+    void try_create_new_clusters(const ScanReplies& scan, uint32_t revolution);
     void complete_expired_clusters(uint16_t current_azimuth);
     
     std::vector<TargetCluster> active_clusters_;

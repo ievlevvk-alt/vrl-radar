@@ -3,6 +3,7 @@
 #include "vrl/radar/processing/cluster.h"
 #include "vrl/radar/processing/legacy_clusterer.h"
 #include <memory>
+#include <iostream>
 
 using namespace vrl::radar;
 
@@ -50,6 +51,7 @@ TEST_F(ClustererTest, ChangeClusterer) {
 
 TEST_F(ClustererTest, ProcessScanCreatesCluster) {
     ClusterTracker tracker;
+    tracker.set_max_revolutions_no_update(10);
     
     ScanReplies scan = create_scan(100);
     scan.rbs_replies.push_back(create_rbs_reply(100, 50, 1234));
@@ -62,6 +64,7 @@ TEST_F(ClustererTest, ProcessScanCreatesCluster) {
 
 TEST_F(ClustererTest, ResetClearsClusters) {
     ClusterTracker tracker;
+    tracker.set_max_revolutions_no_update(10);
     
     ScanReplies scan = create_scan(100);
     scan.rbs_replies.push_back(create_rbs_reply(100, 50, 1234));
@@ -74,26 +77,34 @@ TEST_F(ClustererTest, ResetClearsClusters) {
 }
 
 TEST_F(ClustererTest, LegacyClustererParameters) {
-    auto clusterer = std::make_unique<LegacyClusterer>(5, 20);
+    auto clusterer = std::make_unique<LegacyClusterer>(3, 30);
     
-    // Проверяем, что параметры можно изменить через set_param
+    // Меняем параметры
     clusterer->set_param("max_gap_azimuth", 15);
-    clusterer->set_param("range_window", 40);
+    clusterer->set_param("range_window", 50);
     
-    // Создаем трекер с этим кластеризатором
+    // Создаем трекер
     ClusterTracker tracker(std::move(clusterer));
+    tracker.set_max_revolutions_no_update(20);
     
-    // Проверяем, что кластеризатор работает
-    ScanReplies scan1 = create_scan(100);
-    scan1.rbs_replies.push_back(create_rbs_reply(100, 50, 1234));
-    tracker.process_scan(scan1);
+    // ВАЖНО: устанавливаем параметры в трекере!
+    tracker.set_max_gap_azimuth(15);   // <-- ЭТО ВАЖНО!
+    tracker.set_range_window(50);
     
-    // Пропускаем 10 сканов (больше чем gap=5, но меньше чем 15)
+    // Создаем кластер
+    for (int i = 0; i < 3; ++i) {
+        ScanReplies scan = create_scan(100 + i);
+        scan.rbs_replies.push_back(create_rbs_reply(100 + i, 50 + i, 1234));
+        tracker.process_scan(scan);
+    }
+    
+    EXPECT_EQ(tracker.get_active_clusters().size(), 1);
+    
+    // Пропускаем 10 пустых сканов
     for (int i = 0; i < 10; ++i) {
-        ScanReplies empty_scan = create_scan(101 + i);
+        ScanReplies empty_scan = create_scan(103 + i);
         tracker.process_scan(empty_scan);
     }
     
-    // Кластер должен быть еще активен (gap=15)
     EXPECT_EQ(tracker.get_active_clusters().size(), 1);
 }

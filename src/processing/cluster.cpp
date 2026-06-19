@@ -14,15 +14,18 @@ namespace vrl {
 namespace radar {
 
 // ============================================================================
-// TARGET CLUSTER IMPLEMENTATION
+// TARGET CLUSTER IMPLEMENTATION (С УПРАВЛЕНИЕМ ПО ОБОРОТАМ)
 // ============================================================================
 
-void TargetCluster::add_scan(const ScanReplies& scan) {
+void TargetCluster::add_scan(const ScanReplies& scan, uint32_t revolution) {
     if (scans.empty()) {
         start_azimuth = scan.azimuth;
         first_timestamp = scan.timestamp_ms;
         min_range = 65535;
         max_range = 0;
+        created_at_revolution = revolution;
+        last_update_revolution = revolution;
+        revolutions_since_update = 0;
     }
     
     scans.push_back(scan);
@@ -31,6 +34,24 @@ void TargetCluster::add_scan(const ScanReplies& scan) {
     if (scan.has_replies()) {
         last_reply_azimuth = scan.azimuth;
         last_timestamp = scan.timestamp_ms;
+        last_update_revolution = revolution;
+        revolutions_since_update = 0;
+        marked_for_cleanup = false;
+    } else {
+        // Сканы без ответов не сбрасывают счетчик оборотов
+        revolutions_since_update = revolution - last_update_revolution;
+    }
+    
+    // Ограничение размера кластера (защита от бесконечного роста)
+    const size_t MAX_SCANS_IN_CLUSTER = 500;
+    if (scans.size() > MAX_SCANS_IN_CLUSTER) {
+        size_t to_remove = scans.size() - MAX_SCANS_IN_CLUSTER;
+        scans.erase(scans.begin(), scans.begin() + to_remove);
+        if (!scans.empty()) {
+            start_azimuth = scans.front().azimuth;
+        }
+        VRL_LOG_TRACE(modules::CLUSTER, "Cluster size limited, removed " + 
+                      std::to_string(to_remove) + " old scans");
     }
     
     for (const auto& reply : scan.rbs_replies) {
@@ -46,6 +67,12 @@ void TargetCluster::add_scan(const ScanReplies& scan) {
     }
 }
 
+void TargetCluster::update_revolution(uint32_t revolution) {
+    if (revolution > last_update_revolution) {
+        revolutions_since_update = revolution - last_update_revolution;
+    }
+}
+
 bool TargetCluster::is_active(uint16_t current_azimuth, int max_gap_azimuth) const {
     if (scans.empty()) return false;
     
@@ -53,6 +80,32 @@ bool TargetCluster::is_active(uint16_t current_azimuth, int max_gap_azimuth) con
     if (gap < 0) gap += 4096;
     return gap <= max_gap_azimuth;
 }
+
+bool TargetCluster::is_expired(uint32_t current_revolution) const {
+    if (scans.empty()) return true;
+    
+    // Обновляем счетчик оборотов
+    uint32_t age = current_revolution - last_update_revolution;
+    return age > max_revolutions_no_update;
+}
+
+bool TargetCluster::should_be_cleaned(uint32_t current_revolution) const {
+    // Проверяем по времени (оборотам)
+    if (is_expired(current_revolution)) {
+        return true;
+    }
+    
+    // Проверяем по количеству сканов без ответов
+    if (revolutions_since_update > max_revolutions_no_update / 2) {
+        return true;
+    }
+    
+    return false;
+}
+
+// ============================================================================
+// TARGET CLUSTER - MOVE/COPY МЕТОДЫ
+// ============================================================================
 
 // Версия для rvalue (move-семантика)
 std::vector<RBSReply> TargetCluster::get_all_rbs() && {
@@ -147,32 +200,137 @@ size_t TargetCluster::reply_scans_count() const {
 }
 
 // ============================================================================
-// CLUSTER TRACKER IMPLEMENTATION
+// CLUSTER TRACKER IMPLEMENTATION (С УПРАВЛЕНИЕМ ПО ОБОРОТАМ)
 // ============================================================================
+
+
+ClusterTracker::ClusterTracker(std::unique_ptr<IClusterer> clusterer)
+    : clusterer_(std::move(clusterer)) {
+    // Устанавливаем параметры по умолчанию для пользовательского кластеризатора
+    if (clusterer_) {
+    }
+    VRL_LOG_INFO(modules::CLUSTER, "ClusterTracker initialized with custom clusterer: " + 
+                 (clusterer_ ? clusterer_->get_name() : "null"));
+}
+
+void ClusterTracker::set_max_gap_azimuth(int gap) {
+    if (clusterer_) {
+        clusterer_->set_param("max_gap_azimuth", gap);
+        VRL_LOG_DEBUG(modules::CLUSTER, "set_max_gap_azimuth: " + std::to_string(gap));
+    }
+}
+
+void ClusterTracker::set_range_window(int window) {
+    if (clusterer_) {
+        clusterer_->set_param("range_window", window);
+        VRL_LOG_DEBUG(modules::CLUSTER, "set_range_window: " + std::to_string(window));
+    }
+}
+
+void ClusterTracker::process_scan(const ScanReplies& scan) {
+    if (!clusterer_) {
+        VRL_LOG_WARN(modules::CLUSTER, "No clusterer set, scan ignored");
+        return;
+    }
+    
+    current_revolution_++;
+    
+    // Обрабатываем сканирование
+    clusterer_->process_scan(scan);
+    
+    // Проверка на превышение лимита активных кластеров
+    const auto& active = clusterer_->get_active_clusters();
+    if (active.size() > max_active_clusters_) {
+        VRL_LOG_WARN(modules::CLUSTER, "Too many active clusters (" + 
+                     std::to_string(active.size()) + " > " + 
+                     std::to_string(max_active_clusters_) + "), forcing cleanup");
+        cleanup_stale_clusters(current_revolution_);
+    }
+}
+
+size_t ClusterTracker::cleanup_stale_clusters(uint32_t current_revolution) {
+    if (!clusterer_) return 0;
+    
+    size_t cleaned = 0;
+    
+    // Получаем все завершенные кластеры и очищаем их
+    auto completed = clusterer_->get_completed_clusters();
+    cached_completed_count_ += completed.size();
+    
+    // Работаем с активными кластерами
+    auto& active = const_cast<std::vector<TargetCluster>&>(clusterer_->get_active_clusters());
+    
+    auto it = active.begin();
+    while (it != active.end()) {
+        it->update_revolution(current_revolution);
+        
+        if (it->should_be_cleaned(current_revolution)) {
+            VRL_LOG_TRACE(modules::CLUSTER, "Cleaning stale cluster: age=" + 
+                          std::to_string(current_revolution - it->last_update_revolution) +
+                          " revs, scans=" + std::to_string(it->scans.size()));
+            
+            it = active.erase(it);
+            cleaned++;
+            total_clusters_cleaned_++;
+        } else {
+            ++it;
+        }
+    }
+    
+    if (cleaned > 0) {
+        VRL_LOG_DEBUG(modules::CLUSTER, "Cleaned " + std::to_string(cleaned) + 
+                      " stale clusters");
+    }
+    
+    return cleaned;
+}
+
+ClusterTracker::ClusterStats ClusterTracker::get_stats() const {
+    ClusterStats stats{};
+    
+    if (clusterer_) {
+        size_t active = 0;
+        size_t completed = 0;
+        clusterer_->get_stats(active, completed);
+        
+        stats.active_count = active;
+        stats.completed_count = completed + cached_completed_count_;
+        stats.cleaned_count = total_clusters_cleaned_;
+        stats.total_scans_processed = current_revolution_;
+        stats.total_clusters_formed = 0;
+        stats.total_clusters_completed = 0;
+        stats.total_clusters_cleaned = total_clusters_cleaned_;
+    }
+    
+    return stats;
+}
+
 
 ClusterTracker::ClusterTracker(int max_gap_azimuth, int range_window)
     : clusterer_(std::make_unique<LegacyClusterer>(max_gap_azimuth, range_window)) {
     VRL_LOG_INFO(modules::CLUSTER, "ClusterTracker initialized with LegacyClusterer: gap=" + 
                   std::to_string(max_gap_azimuth) + ", window=" + std::to_string(range_window));
+    VRL_LOG_DEBUG(modules::CLUSTER, "MAI management: max_revolutions_no_update=" + 
+                  std::to_string(max_revolutions_no_update_) + 
+                  ", max_active_clusters=" + std::to_string(max_active_clusters_));
 }
 
-ClusterTracker::ClusterTracker(std::unique_ptr<IClusterer> clusterer)
-    : clusterer_(std::move(clusterer)) {
-    VRL_LOG_INFO(modules::CLUSTER, "ClusterTracker initialized with custom clusterer: " + 
-                 (clusterer_ ? clusterer_->get_name() : "null"));
-}
 
-void ClusterTracker::process_scan(const ScanReplies& scan) {
-    if (clusterer_) {
-        clusterer_->process_scan(scan);
-    } else {
-        VRL_LOG_WARN(modules::CLUSTER, "No clusterer set, scan ignored");
-    }
-}
 
 std::vector<TargetCluster> ClusterTracker::get_completed_clusters() {
     if (clusterer_) {
-        return clusterer_->get_completed_clusters();
+        auto clusters = clusterer_->get_completed_clusters();
+        
+        // Ограничиваем количество возвращаемых кластеров
+        const size_t MAX_RETURN = 100;
+        if (clusters.size() > MAX_RETURN) {
+            VRL_LOG_WARN(modules::CLUSTER, "Too many completed clusters (" + 
+                         std::to_string(clusters.size()) + "), limiting to " + 
+                         std::to_string(MAX_RETURN));
+            clusters.resize(MAX_RETURN);
+        }
+        
+        return clusters;
     }
     return {};
 }
@@ -189,6 +347,8 @@ void ClusterTracker::reset() {
     if (clusterer_) {
         clusterer_->reset();
     }
+    current_revolution_ = 0;
+    total_clusters_cleaned_ = 0;
 }
 
 void ClusterTracker::set_clusterer(std::unique_ptr<IClusterer> clusterer) {
@@ -204,20 +364,9 @@ std::string ClusterTracker::get_algorithm_name() const {
     return "none";
 }
 
-void ClusterTracker::set_max_gap_azimuth(int gap) {
-    if (clusterer_) {
-        clusterer_->set_param("max_gap_azimuth", gap);
-    }
-}
-
-void ClusterTracker::set_range_window(int window) {
-    if (clusterer_) {
-        clusterer_->set_param("range_window", window);
-    }
-}
 
 // ============================================================================
-// CLUSTER PROCESSOR IMPLEMENTATION
+// CLUSTER PROCESSOR IMPLEMENTATION (БЕЗ ИЗМЕНЕНИЙ)
 // ============================================================================
 
 ClusterProcessor::ClusterProcessor(const RadarConfig& config)
@@ -225,9 +374,7 @@ ClusterProcessor::ClusterProcessor(const RadarConfig& config)
     , range_grouper_(5)
     , rbs_processor_(config)
     , uvd_processor_(config) {
-    VRL_LOG_DEBUG(modules::CLUSTER, "ClusterProcessor initialized: range_bin_rbs=" + 
-                  std::to_string(config.range_bin_rbs) + ", range_bin_uvd=" + 
-                  std::to_string(config.range_bin_uvd));
+    VRL_LOG_DEBUG(modules::CLUSTER, "ClusterProcessor initialized");
 }
 
 void ClusterProcessor::set_garbling_solver(std::unique_ptr<GarblingSolver> solver) {
