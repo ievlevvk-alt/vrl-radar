@@ -6,6 +6,7 @@
 #include <vector>
 #include <map>
 #include <set>
+#include <cstdint>
 
 // Forward declaration
 namespace vrl {
@@ -20,7 +21,8 @@ namespace radar {
 /**
  * @brief Группирует ответы по дальности
  * 
- * Отвечает за объединение ответов в группы по близости дальности
+ * Отвечает за объединение ответов в группы по близости дальности.
+ * Использует сортировку O(n log n) вместо O(n²) линейного поиска.
  */
 class RangeGrouper {
 public:
