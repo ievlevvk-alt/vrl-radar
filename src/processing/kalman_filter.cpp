@@ -1,6 +1,8 @@
 // src/processing/kalman_filter.cpp
 #include "vrl/radar/processing/kalman_filter.h"
 #include <cmath>
+#include <cstring>
+#include <memory>   // <-- ДОБАВЛЯЕМ
 
 namespace vrl {
 namespace radar {
@@ -35,6 +37,16 @@ void RevolutionKalmanFilter::init(double x, double y, uint32_t revolution) {
     }
     
     initialized_ = true;
+}
+
+void RevolutionKalmanFilter::reset() {
+    initialized_ = false;
+    x_ = 0.0;
+    y_ = 0.0;
+    vx_ = 0.0;
+    vy_ = 0.0;
+    last_revolution_ = 0;
+    update_matrices();
 }
 
 void RevolutionKalmanFilter::predict(uint32_t delta_revolutions) {
@@ -84,6 +96,31 @@ void RevolutionKalmanFilter::update(double x, double y, uint32_t revolution) {
 std::pair<double, double> RevolutionKalmanFilter::predict_position(uint32_t delta_revolutions) const {
     if (!initialized_) return {0.0, 0.0};
     return {x_ + vx_ * delta_revolutions, y_ + vy_ * delta_revolutions};
+}
+
+void RevolutionKalmanFilter::get_covariance(double P[4][4]) const {
+    for (int i = 0; i < 4; ++i) {
+        for (int j = 0; j < 4; ++j) {
+            P[i][j] = P_[i][j];
+        }
+    }
+}
+
+void RevolutionKalmanFilter::set_covariance(const double P[4][4]) {
+    for (int i = 0; i < 4; ++i) {
+        for (int j = 0; j < 4; ++j) {
+            P_[i][j] = P[i][j];
+        }
+    }
+}
+
+std::unique_ptr<ITrackerFilter> RevolutionKalmanFilter::clone() const {
+    auto clone = std::make_unique<RevolutionKalmanFilter>(Q_, R_);
+    if (initialized_) {
+        clone->init(x_, y_, last_revolution_);
+        clone->set_covariance(P_);
+    }
+    return clone;
 }
 
 } // namespace radar

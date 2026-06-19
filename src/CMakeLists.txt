@@ -6,9 +6,9 @@ add_library(vrl_radar STATIC
     processing/cluster.cpp
     processing/garbling_solver.cpp
     processing/kalman_filter.cpp
-    processing/range_grouper.cpp      # НОВЫЙ ФАЙЛ
-    processing/rbs_processor.cpp      # НОВЫЙ ФАЙЛ
-    processing/uvd_processor.cpp      # НОВЫЙ ФАЙЛ
+    processing/range_grouper.cpp
+    processing/rbs_processor.cpp
+    processing/uvd_processor.cpp
     processing/reply_processor.cpp
     processing/tracker.cpp
     simulation/simulator.cpp

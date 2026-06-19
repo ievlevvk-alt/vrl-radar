@@ -1187,3 +1187,73 @@ auto replies = cluster.get_all_rbs();          // Использует const& в
 
 =============
 
+Как использовать новый фильтр
+cpp
+
+// Создаем кастомный фильтр
+class MyCustomFilter : public ITrackerFilter {
+    // ... реализация ...
+};
+
+// Используем в TrackManager
+TrackerConfig config;
+auto filter = std::make_unique<MyCustomFilter>();
+TrackManager manager(config, std::move(filter));
+
+// Или заменяем позже
+manager.set_filter(std::make_unique<AnotherFilter>());
+
+===============
+
+
+Как добавить новый фильтр в будущем
+1. Создать класс, реализующий ITrackerFilter
+cpp
+
+// include/vrl/radar/processing/extended_kalman_filter.h
+#pragma once
+
+#include "i_tracker_filter.h"
+#include <Eigen/Dense>
+
+namespace vrl {
+namespace radar {
+
+class ExtendedKalmanFilter : public ITrackerFilter {
+public:
+    ExtendedKalmanFilter(/* параметры */);
+    
+    // Реализация всех виртуальных методов ITrackerFilter
+    void init(double x, double y, uint32_t revolution) override;
+    void predict(uint32_t delta_revolutions) override;
+    void update(double x, double y, uint32_t revolution) override;
+    // ... остальные методы ...
+    
+    std::string get_name() const override { return "ExtendedKalmanFilter"; }
+    std::unique_ptr<ITrackerFilter> clone() const override;
+    
+private:
+    // Специфичные для EKF поля
+    Eigen::MatrixXd F_, H_, Q_, R_, P_;
+    Eigen::VectorXd x_;
+    // ...
+};
+
+} // namespace radar
+} // namespace vrl
+
+2. Использовать в TrackManager
+cpp
+
+// В коде приложения
+TrackerConfig config;
+auto filter = std::make_unique<ExtendedKalmanFilter>(/* параметры */);
+TrackManager manager(config, std::move(filter));
+
+// Или заменить позже
+manager.set_filter(std::make_unique<ExtendedKalmanFilter>(/* параметры */));
+
+
+
+==================
+

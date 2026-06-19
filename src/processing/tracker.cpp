@@ -15,12 +15,42 @@ namespace radar {
 // TRACK MANAGER
 // ============================================================================
 
-TrackManager::TrackManager(const TrackerConfig& config) : config_(config), next_id_(1) {
-    VRL_LOG_INFO(modules::TRACKER, "TrackManager initialized");
+TrackManager::TrackManager(const TrackerConfig& config) 
+    : config_(config)
+    , default_filter_(std::make_unique<RevolutionKalmanFilter>(
+          config.process_noise, config.measurement_noise)) {
+    VRL_LOG_INFO(modules::TRACKER, "TrackManager initialized with default Kalman filter");
     VRL_LOG_DEBUG(modules::TRACKER, "Config: min_hits=" + std::to_string(config.min_hits_to_confirm) +
                   ", max_coast=" + std::to_string(config.max_coast_count) +
                   ", gate_dist=" + std::to_string(config.max_gate_distance) +
                   ", gate_az=" + std::to_string(config.max_gate_azimuth));
+}
+
+TrackManager::TrackManager(const TrackerConfig& config, 
+                           std::unique_ptr<ITrackerFilter> filter)
+    : config_(config)
+    , default_filter_(std::move(filter)) {
+    VRL_LOG_INFO(modules::TRACKER, "TrackManager initialized with custom filter: " + 
+                 (default_filter_ ? default_filter_->get_name() : "null"));
+    VRL_LOG_DEBUG(modules::TRACKER, "Config: min_hits=" + std::to_string(config.min_hits_to_confirm) +
+                  ", max_coast=" + std::to_string(config.max_coast_count) +
+                  ", gate_dist=" + std::to_string(config.max_gate_distance) +
+                  ", gate_az=" + std::to_string(config.max_gate_azimuth));
+}
+
+void TrackManager::set_filter(std::unique_ptr<ITrackerFilter> filter) {
+    default_filter_ = std::move(filter);
+    VRL_LOG_INFO(modules::TRACKER, "Filter changed to: " + 
+                 (default_filter_ ? default_filter_->get_name() : "null"));
+}
+
+std::unique_ptr<ITrackerFilter> TrackManager::create_filter() const {
+    if (default_filter_) {
+        return default_filter_->clone();
+    }
+    // Fallback на Kalman фильтр
+    return std::make_unique<RevolutionKalmanFilter>(
+        config_.process_noise, config_.measurement_noise);
 }
 
 void TrackManager::process_targets(const std::vector<TargetReport>& targets, uint32_t revolution) {
@@ -60,7 +90,7 @@ void TrackManager::update_tracks(const std::vector<TargetReport>& targets, uint3
     
     for (auto& [id, twf] : tracks_) {
         auto& track = twf.track;
-        auto& filter = twf.filter;
+        auto& filter = *twf.filter;
         
         if (track.state == TrackState::DROPPED) continue;
         
@@ -128,9 +158,7 @@ void TrackManager::update_tracks(const std::vector<TargetReport>& targets, uint3
                 track.altitude = target.uvd.altitude;
             }
             
-            // ИСПОЛЬЗУЕМ КОНФИГУРАЦИЮ ДЛЯ РАСЧЕТА УВЕРЕННОСТИ
-            double max_confidence = 1.0;
-            track.confidence = std::min(max_confidence, static_cast<double>(track.hit_count) / 10.0);
+            track.confidence = std::min(1.0, static_cast<double>(track.hit_count) / 10.0);
             track.position_error = best_distance;
             track.add_history(target);
             updates++;
@@ -207,8 +235,7 @@ void TrackManager::create_new_tracks(const std::vector<TargetReport>& targets, u
             new_track.last_update_revolution = revolution;
             new_track.hit_count = 1;
             new_track.coast_count = 0;
-            // ИСПОЛЬЗУЕМ КОНФИГУРАЦИЮ ДЛЯ НАЧАЛЬНОЙ УВЕРЕННОСТИ
-            new_track.confidence = 0.1;  // Будет переопределено из SystemConfig
+            new_track.confidence = 0.1;
             
             if (target.type == TargetReport::SourceType::RBS) {
                 new_track.mode3a_code = target.rbs.mode3a_code;
@@ -220,10 +247,11 @@ void TrackManager::create_new_tracks(const std::vector<TargetReport>& targets, u
             
             new_track.add_history(target);
             
-            RevolutionKalmanFilter filter(config_.process_noise, config_.measurement_noise);
-            filter.init(target.x, target.y, revolution);
+            // Создаем новый фильтр через фабрику
+            auto filter = create_filter();
+            filter->init(target.x, target.y, revolution);
             
-            tracks_[new_track.id] = TrackWithFilter(new_track, filter);
+            tracks_[new_track.id] = TrackWithFilter(new_track, std::move(filter));
             created++;
             
             VRL_LOG_DEBUG(modules::TRACKER, "Created new track " + std::to_string(new_track.id) + 
@@ -249,9 +277,7 @@ void TrackManager::manage_track_states(uint32_t revolution) {
         }
         
         if (track.state == TrackState::COASTING) {
-            // ИСПОЛЬЗУЕМ КОНФИГУРАЦИЮ ДЛЯ УМЕНЬШЕНИЯ УВЕРЕННОСТИ
-            double decay = 0.05;
-            track.confidence = std::max(0.0, track.confidence - decay);
+            track.confidence = std::max(0.0, track.confidence - 0.05);
             coasting_updated++;
         }
     }

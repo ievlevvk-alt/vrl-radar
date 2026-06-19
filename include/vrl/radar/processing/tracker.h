@@ -4,6 +4,7 @@
 #include "../core/types.h"
 #include "../core/replies.h"
 #include "../core/config.h"
+#include "i_tracker_filter.h"
 #include "kalman_filter.h"
 #include <vector>
 #include <map>
@@ -67,24 +68,75 @@ struct Track {
 
 class TrackManager {
 public:
+    /**
+     * @brief Конструктор с конфигурацией
+     * @param config конфигурация трекера
+     */
     explicit TrackManager(const TrackerConfig& config = TrackerConfig());
+    
+    /**
+     * @brief Конструктор с пользовательским фильтром
+     * @param config конфигурация трекера
+     * @param filter уникальный указатель на фильтр
+     */
+    explicit TrackManager(const TrackerConfig& config, 
+                          std::unique_ptr<ITrackerFilter> filter);
+    
     ~TrackManager() = default;
     
+    /**
+     * @brief Обработать цели на текущем обороте
+     * @param targets вектор отчетов о целях
+     * @param revolution номер оборота
+     */
     void process_targets(const std::vector<TargetReport>& targets, uint32_t revolution);
+    
+    /**
+     * @brief Получить активные треки
+     * @return вектор треков (отсортирован по уверенности)
+     */
     std::vector<Track> get_active_tracks() const;
+    
+    /**
+     * @brief Получить подтвержденные треки
+     * @return вектор подтвержденных треков
+     */
     std::vector<Track> get_confirmed_tracks() const;
+    
+    /**
+     * @brief Сбросить все треки
+     */
     void reset();
+    
+    /**
+     * @brief Включить/выключить отладочный режим
+     */
     void set_debug(bool enable) { config_.debug_mode = enable; }
+    
+    /**
+     * @brief Получить конфигурацию
+     */
     const TrackerConfig& get_config() const { return config_; }
+    
+    /**
+     * @brief Заменить фильтр на новый
+     * @param filter новый фильтр
+     */
+    void set_filter(std::unique_ptr<ITrackerFilter> filter);
+    
+    /**
+     * @brief Получить текущий фильтр
+     */
+    ITrackerFilter* get_filter() const { return default_filter_.get(); }
     
 private:
     struct TrackWithFilter {
         Track track;
-        RevolutionKalmanFilter filter;
+        std::unique_ptr<ITrackerFilter> filter;
         
         TrackWithFilter() = default;
-        TrackWithFilter(const Track& t, const RevolutionKalmanFilter& f)
-            : track(t), filter(f) {}
+        TrackWithFilter(const Track& t, std::unique_ptr<ITrackerFilter> f)
+            : track(t), filter(std::move(f)) {}
     };
     
     void update_tracks(const std::vector<TargetReport>& targets, uint32_t revolution);
@@ -94,9 +146,17 @@ private:
     bool is_code_match(const TargetReport& target, const Track& track) const;
     double calculate_azimuth_diff(double az1, double az2) const;
     
+    /**
+     * @brief Создать новый фильтр для трека
+     */
+    std::unique_ptr<ITrackerFilter> create_filter() const;
+    
     TrackerConfig config_;
     uint64_t next_id_{1};
     std::map<uint64_t, TrackWithFilter> tracks_;
+    
+    // Фильтр по умолчанию (используется для создания новых)
+    std::unique_ptr<ITrackerFilter> default_filter_;
 };
 
 } // namespace radar

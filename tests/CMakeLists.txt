@@ -1,6 +1,5 @@
 # tests/CMakeLists.txt
 
-# Включаем поддержку GTest
 include(GoogleTest)
 
 # Тест для ConfigLoader
@@ -19,12 +18,10 @@ target_compile_definitions(test_config_loader
         $<$<BOOL:${ENABLE_VERBOSE_LOGGING}>:ENABLE_VERBOSE_LOGGING>
 )
 
-# Явно указываем выходную директорию
 set_target_properties(test_config_loader PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests"
 )
 
-# Регистрируем тест в CTest
 add_test(NAME test_config_loader 
     COMMAND test_config_loader
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/tests
@@ -99,5 +96,29 @@ set_target_properties(test_reply_processor PROPERTIES
 
 add_test(NAME test_reply_processor 
     COMMAND test_reply_processor
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/tests
+)
+
+# ===== НОВЫЙ ТЕСТ: TrackerFilter =====
+add_executable(test_tracker_filter
+    test_tracker_filter.cpp
+)
+
+target_link_libraries(test_tracker_filter
+    vrl_radar
+    GTest::gtest_main
+)
+
+target_compile_definitions(test_tracker_filter
+    PRIVATE
+        $<$<BOOL:${ENABLE_VERBOSE_LOGGING}>:ENABLE_VERBOSE_LOGGING>
+)
+
+set_target_properties(test_tracker_filter PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests"
+)
+
+add_test(NAME test_tracker_filter 
+    COMMAND test_tracker_filter
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/tests
 )
