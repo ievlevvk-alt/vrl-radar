@@ -99,7 +99,7 @@ add_test(NAME test_reply_processor
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/tests
 )
 
-# ===== НОВЫЙ ТЕСТ: TrackerFilter =====
+# Тест для TrackerFilter
 add_executable(test_tracker_filter
     test_tracker_filter.cpp
 )
@@ -171,7 +171,7 @@ add_test(NAME test_target_report
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/tests
 )
 
-# НОВЫЙ ТЕСТ: CircularHistory
+# Тест для CircularHistory
 add_executable(test_circular_history
     test_circular_history.cpp
 )
@@ -216,5 +216,29 @@ set_target_properties(test_cluster_cleanup PROPERTIES
 
 add_test(NAME test_cluster_cleanup 
     COMMAND test_cluster_cleanup
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/tests
+)
+
+# НОВЫЙ ТЕСТ: RangeGrouper
+add_executable(test_range_grouper
+    test_range_grouper.cpp
+)
+
+target_link_libraries(test_range_grouper
+    vrl_radar
+    GTest::gtest_main
+)
+
+target_compile_definitions(test_range_grouper
+    PRIVATE
+        $<$<BOOL:${ENABLE_VERBOSE_LOGGING}>:ENABLE_VERBOSE_LOGGING>
+)
+
+set_target_properties(test_range_grouper PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests"
+)
+
+add_test(NAME test_range_grouper 
+    COMMAND test_range_grouper
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/tests
 )

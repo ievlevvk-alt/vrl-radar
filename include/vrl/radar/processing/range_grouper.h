@@ -7,19 +7,17 @@
 #include <map>
 #include <set>
 #include <cstdint>
+#include <algorithm>
+#include <memory>
+
+namespace vrl {
+namespace radar {
 
 // Forward declaration
-namespace vrl {
-namespace radar {
 struct TargetCluster;
-}
-}
-
-namespace vrl {
-namespace radar {
 
 /**
- * @brief Группирует ответы по дальности
+ * @brief Группирует ответы по дальности с использованием сортировки O(n log n)
  * 
  * Отвечает за объединение ответов в группы по близости дальности.
  * Использует сортировку O(n log n) вместо O(n²) линейного поиска.
@@ -51,7 +49,12 @@ public:
         
         bool has_rbs() const { return !rbs_replies.empty(); }
         bool has_uvd() const { return !uvd_replies.empty(); }
-        bool has_overlap() const { return rbs_replies.size() > 1; }
+        bool has_overlap() const { return rbs_replies.size() > 1 || uvd_replies.size() > 1; }
+        
+        void reserve(size_t rbs_count, size_t uvd_count) {
+            rbs_replies.reserve(rbs_count);
+            uvd_replies.reserve(uvd_count);
+        }
     };
     
     /**
@@ -61,7 +64,7 @@ public:
     explicit RangeGrouper(uint16_t range_tolerance_bins = 5);
     
     /**
-     * @brief Сгруппировать ответы из кластера по дальности
+     * @brief Сгруппировать ответы из кластера по дальности (оптимизированная версия)
      * @param cluster кластер с ответами
      * @return вектор групп
      */
@@ -79,6 +82,46 @@ public:
     uint16_t get_tolerance() const { return range_tolerance_bins_; }
     
 private:
+    /**
+     * @brief Вспомогательная структура для сортировки ответов
+     */
+    struct ReplyEntry {
+        uint16_t range;
+        uint16_t azimuth;
+        union {
+            const RBSReply* rbs;
+            const UVDReply* uvd;
+        };
+        enum class Type : uint8_t { RBS, UVD } type;
+        
+        static ReplyEntry make_rbs(const RBSReply* reply) {
+            ReplyEntry entry;
+            entry.range = reply->range;
+            entry.azimuth = reply->azimuth;
+            entry.rbs = reply;
+            entry.type = Type::RBS;
+            return entry;
+        }
+        
+        static ReplyEntry make_uvd(const UVDReply* reply) {
+            ReplyEntry entry;
+            entry.range = reply->range;
+            entry.azimuth = reply->azimuth;
+            entry.uvd = reply;
+            entry.type = Type::UVD;
+            return entry;
+        }
+    };
+    
+    /**
+     * @brief Группировка отсортированных записей
+     */
+    void group_sorted_entries(
+        const std::vector<ReplyEntry>& entries,
+        std::vector<RangeGroup>& groups,
+        bool is_rbs
+    );
+    
     uint16_t range_tolerance_bins_;
 };
 

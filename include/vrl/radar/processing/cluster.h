@@ -6,7 +6,7 @@
 #include "../core/config.h"
 #include "reply_processor.h"
 #include "garbling_solver.h"
-#include "range_grouper.h"
+#include "range_grouper.h"  // <-- УЖЕ ЕСТЬ
 #include "rbs_processor.h"
 #include "uvd_processor.h"
 #include "i_clusterer.h"
@@ -34,7 +34,6 @@ struct TargetCluster {
     uint32_t first_timestamp{0};
     uint32_t last_timestamp{0};
     
-    // УПРАВЛЕНИЕ ПО ОБОРОТАМ (MAI)
     uint32_t created_at_revolution{0};
     uint32_t last_update_revolution{0};
     uint32_t revolutions_since_update{0};
@@ -82,14 +81,12 @@ public:
     IClusterer* get_clusterer() const { return clusterer_.get(); }
     std::string get_algorithm_name() const;
     
-    // Управление по оборотам
     void set_max_revolutions_no_update(uint32_t max) { max_revolutions_no_update_ = max; }
     uint32_t get_max_revolutions_no_update() const { return max_revolutions_no_update_; }
     void set_max_active_clusters(size_t max) { max_active_clusters_ = max; }
     size_t get_max_active_clusters() const { return max_active_clusters_; }
     size_t cleanup_stale_clusters(uint32_t current_revolution);
     
-    // Управление параметрами кластеризации
     void set_max_gap_azimuth(int gap);
     void set_range_window(int window);
     
@@ -111,8 +108,6 @@ private:
     size_t max_active_clusters_{100};
     uint32_t current_revolution_{0};
     mutable size_t total_clusters_cleaned_{0};
-    
-    // Кэш для статистики
     mutable size_t cached_completed_count_{0};
 };
 
@@ -126,7 +121,9 @@ public:
     
     std::vector<TargetReport> process_cluster(const TargetCluster& cluster);
     
-    void set_range_tolerance(uint16_t bins) { range_grouper_.set_tolerance(bins); }
+    void set_range_tolerance(uint16_t bins) { 
+        range_grouper_.set_tolerance(bins); 
+    }
     void set_min_hits(int hits) { 
         min_hits_ = hits;
         rbs_processor_.set_min_hits(hits);

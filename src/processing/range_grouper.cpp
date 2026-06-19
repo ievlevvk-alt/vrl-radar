@@ -17,6 +17,59 @@ RangeGrouper::RangeGrouper(uint16_t range_tolerance_bins)
                   std::to_string(range_tolerance_bins) + " bins");
 }
 
+void RangeGrouper::group_sorted_entries(
+    const std::vector<ReplyEntry>& entries,
+    std::vector<RangeGroup>& groups,
+    bool is_rbs) {
+    
+    if (entries.empty()) return;
+    
+    // Проходим по отсортированным записям
+    size_t i = 0;
+    while (i < entries.size()) {
+        RangeGroup group;
+        group.nominal_range = entries[i].range;
+        
+        // Предварительное резервирование (приблизительно)
+        size_t remaining = entries.size() - i;
+        size_t estimated = std::min(remaining, size_t(10));
+        if (is_rbs) {
+            group.reserve(estimated, 0);
+        } else {
+            group.reserve(0, estimated);
+        }
+        
+        // Добавляем первый элемент
+        if (is_rbs) {
+            group.add_rbs(entries[i].rbs);
+        } else {
+            group.add_uvd(entries[i].uvd);
+        }
+        
+        // Добавляем все элементы, попадающие в допуск
+        size_t j = i + 1;
+        while (j < entries.size()) {
+            int16_t range_diff = static_cast<int16_t>(entries[j].range) - 
+                                static_cast<int16_t>(group.nominal_range);
+            if (range_diff < 0) range_diff = -range_diff;
+            
+            if (range_diff <= range_tolerance_bins_) {
+                if (is_rbs) {
+                    group.add_rbs(entries[j].rbs);
+                } else {
+                    group.add_uvd(entries[j].uvd);
+                }
+                j++;
+            } else {
+                break;
+            }
+        }
+        
+        groups.push_back(std::move(group));
+        i = j;
+    }
+}
+
 std::vector<RangeGrouper::RangeGroup> RangeGrouper::group(const TargetCluster& cluster) {
     VRL_LOG_TRACE(modules::CLUSTER, "Grouping " + std::to_string(cluster.scans.size()) + " scans by range");
     
@@ -25,156 +78,96 @@ std::vector<RangeGrouper::RangeGroup> RangeGrouper::group(const TargetCluster& c
     }
     
     // ============================================================================
-    // ШАГ 1: Собираем RBS ответы в отдельный список
+    // ШАГ 1: Подсчет количества ответов для резервирования
     // ============================================================================
     
-    struct ReplyEntry {
-        uint16_t range;
-        uint16_t azimuth;
-        union {
-            const RBSReply* rbs;
-            const UVDReply* uvd;
-        };
-        enum class Type { RBS, UVD } type;
-        bool is_rbs;
-        
-        static ReplyEntry make_rbs(const RBSReply* reply) {
-            ReplyEntry entry;
-            entry.range = reply->range;
-            entry.azimuth = reply->azimuth;
-            entry.rbs = reply;
-            entry.type = Type::RBS;
-            entry.is_rbs = true;
-            return entry;
-        }
-        
-        static ReplyEntry make_uvd(const UVDReply* reply) {
-            ReplyEntry entry;
-            entry.range = reply->range;
-            entry.azimuth = reply->azimuth;
-            entry.uvd = reply;
-            entry.type = Type::UVD;
-            entry.is_rbs = false;
-            return entry;
-        }
-    };
+    size_t total_rbs = 0;
+    size_t total_uvd = 0;
     
-    std::vector<ReplyEntry> rbs_replies;
-    std::vector<ReplyEntry> uvd_replies;
-    
-    // Приблизительная оценка для резервирования памяти
-    size_t estimated_rbs = 0;
-    size_t estimated_uvd = 0;
     for (const auto& scan : cluster.scans) {
-        estimated_rbs += scan.rbs_replies.size();
-        estimated_uvd += scan.uvd_replies.size();
+        total_rbs += scan.rbs_replies.size();
+        total_uvd += scan.uvd_replies.size();
     }
-    rbs_replies.reserve(estimated_rbs);
-    uvd_replies.reserve(estimated_uvd);
     
-    // Собираем RBS ответы
+    if (total_rbs == 0 && total_uvd == 0) {
+        VRL_LOG_TRACE(modules::CLUSTER, "No replies to group");
+        return {};
+    }
+    
+    // ============================================================================
+    // ШАГ 2: Сбор ответов в единый вектор с типом
+    // ============================================================================
+    
+    std::vector<ReplyEntry> entries;
+    entries.reserve(total_rbs + total_uvd);
+    
+    // Добавляем RBS ответы
     for (const auto& scan : cluster.scans) {
         for (const auto& reply : scan.rbs_replies) {
-            rbs_replies.push_back(ReplyEntry::make_rbs(&reply));
+            entries.push_back(ReplyEntry::make_rbs(&reply));
         }
     }
     
-    // Собираем UVD ответы
+    // Добавляем UVD ответы
     for (const auto& scan : cluster.scans) {
         for (const auto& reply : scan.uvd_replies) {
-            uvd_replies.push_back(ReplyEntry::make_uvd(&reply));
+            entries.push_back(ReplyEntry::make_uvd(&reply));
         }
     }
     
+    VRL_LOG_TRACE(modules::CLUSTER, "Collected " + std::to_string(entries.size()) + 
+                  " replies (" + std::to_string(total_rbs) + " RBS, " + 
+                  std::to_string(total_uvd) + " UVD)");
+    
     // ============================================================================
-    // ШАГ 2: Группируем RBS ответы отдельно
+    // ШАГ 3: Сортировка по дальности O(n log n)
     // ============================================================================
     
-    std::vector<RangeGroup> all_groups;
+    std::sort(entries.begin(), entries.end(),
+        [](const ReplyEntry& a, const ReplyEntry& b) {
+            return a.range < b.range;
+        });
     
-    if (!rbs_replies.empty()) {
-        // Сортируем RBS по дальности
-        std::sort(rbs_replies.begin(), rbs_replies.end(),
-            [](const ReplyEntry& a, const ReplyEntry& b) {
-                return a.range < b.range;
-            });
-        
-        // Группируем RBS
-        size_t i = 0;
-        while (i < rbs_replies.size()) {
-            RangeGroup group;
-            group.nominal_range = rbs_replies[i].range;
-            group.add_rbs(rbs_replies[i].rbs);
-            
-            size_t j = i + 1;
-            while (j < rbs_replies.size()) {
-                int16_t range_diff = std::abs(static_cast<int16_t>(
-                    rbs_replies[j].range - group.nominal_range));
-                
-                if (range_diff <= range_tolerance_bins_) {
-                    group.add_rbs(rbs_replies[j].rbs);
-                    j++;
-                } else {
-                    break;
-                }
-            }
-            
-            all_groups.push_back(std::move(group));
-            i = j;
+    // ============================================================================
+    // ШАГ 4: Группировка
+    // ============================================================================
+    
+    std::vector<RangeGroup> result;
+    
+    // Разделяем RBS и UVD для более эффективной группировки
+    std::vector<ReplyEntry> rbs_entries;
+    std::vector<ReplyEntry> uvd_entries;
+    
+    rbs_entries.reserve(total_rbs);
+    uvd_entries.reserve(total_uvd);
+    
+    for (const auto& entry : entries) {
+        if (entry.type == ReplyEntry::Type::RBS) {
+            rbs_entries.push_back(entry);
+        } else {
+            uvd_entries.push_back(entry);
         }
-        
-        VRL_LOG_TRACE(modules::CLUSTER, "Created " + 
-                      std::to_string(all_groups.size()) + " RBS groups from " + 
-                      std::to_string(rbs_replies.size()) + " replies");
     }
     
+    // Группируем RBS отдельно
+    group_sorted_entries(rbs_entries, result, true);
+    
+    // Группируем UVD отдельно
+    group_sorted_entries(uvd_entries, result, false);
+    
     // ============================================================================
-    // ШАГ 3: Группируем UVD ответы отдельно
+    // ШАГ 5: Сортировка групп по дальности для консистентности
     // ============================================================================
     
-    if (!uvd_replies.empty()) {
-        // Сортируем UVD по дальности
-        std::sort(uvd_replies.begin(), uvd_replies.end(),
-            [](const ReplyEntry& a, const ReplyEntry& b) {
-                return a.range < b.range;
-            });
-        
-        // Группируем UVD
-        size_t i = 0;
-        size_t uvd_groups_start = all_groups.size();
-        
-        while (i < uvd_replies.size()) {
-            RangeGroup group;
-            group.nominal_range = uvd_replies[i].range;
-            group.add_uvd(uvd_replies[i].uvd);
-            
-            size_t j = i + 1;
-            while (j < uvd_replies.size()) {
-                int16_t range_diff = std::abs(static_cast<int16_t>(
-                    uvd_replies[j].range - group.nominal_range));
-                
-                if (range_diff <= range_tolerance_bins_) {
-                    group.add_uvd(uvd_replies[j].uvd);
-                    j++;
-                } else {
-                    break;
-                }
-            }
-            
-            all_groups.push_back(std::move(group));
-            i = j;
-        }
-        
-        VRL_LOG_TRACE(modules::CLUSTER, "Created " + 
-                      std::to_string(all_groups.size() - uvd_groups_start) + 
-                      " UVD groups from " + std::to_string(uvd_replies.size()) + " replies");
-    }
+    std::sort(result.begin(), result.end(),
+        [](const RangeGroup& a, const RangeGroup& b) {
+            return a.nominal_range < b.nominal_range;
+        });
     
-    VRL_LOG_TRACE(modules::CLUSTER, "Total: " + std::to_string(all_groups.size()) + 
-                  " groups from " + std::to_string(rbs_replies.size() + uvd_replies.size()) + 
-                  " replies");
+    VRL_LOG_TRACE(modules::CLUSTER, "Created " + std::to_string(result.size()) + 
+                  " groups from " + std::to_string(entries.size()) + " replies");
     
-    return all_groups;
+    return result;
 }
 
 } // namespace radar
