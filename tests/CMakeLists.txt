@@ -242,3 +242,27 @@ add_test(NAME test_range_grouper
     COMMAND test_range_grouper
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/tests
 )
+
+# НОВЫЙ ТЕСТ: ObjectPool
+add_executable(test_object_pool
+    test_object_pool.cpp
+)
+
+target_link_libraries(test_object_pool
+    vrl_radar
+    GTest::gtest_main
+)
+
+target_compile_definitions(test_object_pool
+    PRIVATE
+        $<$<BOOL:${ENABLE_VERBOSE_LOGGING}>:ENABLE_VERBOSE_LOGGING>
+)
+
+set_target_properties(test_object_pool PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests"
+)
+
+add_test(NAME test_object_pool 
+    COMMAND test_object_pool
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/tests
+)

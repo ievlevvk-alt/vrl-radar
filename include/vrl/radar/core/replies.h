@@ -2,13 +2,14 @@
 #pragma once
 
 #include "types.h"
+#include "object_pool.hpp"
 #include <array>
 #include <vector>
 #include <cstdint>
 #include <string>
 #include <cstring>
-#include <variant>   // <-- ДОБАВЛЯЕМ
-#include <memory>    // <-- ДОБАВЛЯЕМ
+#include <variant>
+#include <memory>
 
 namespace vrl {
 namespace radar {
@@ -53,6 +54,20 @@ struct RBSReply {
         if (idx < 12) return ether_amplitudes_sls[ether_to_code12[idx]];
         return 0;
     }
+    
+    // Для пула объектов
+    void reset() {
+        ether_amplitudes.fill(0);
+        ether_amplitudes_sls.fill(0);
+        code12 = 0;
+        spi = false;
+        confidence.fill(0);
+        azimuth = 0;
+        range = 0;
+        x = 0.0;
+        y = 0.0;
+        is_valid = false;
+    }
 };
 
 // ============================================================================
@@ -81,6 +96,18 @@ struct UVDReply {
         if (bit_idx >= 20 || repeat >= 2) return 0;
         return ether_amplitudes[repeat * 40 + bit_idx * 2 + 1];
     }
+    
+    void reset() {
+        ether_amplitudes.fill(0);
+        ether_amplitudes_sls.fill(0);
+        data20 = 0;
+        error_mask = 0;
+        azimuth = 0;
+        range = 0;
+        x = 0.0;
+        y = 0.0;
+        is_valid = false;
+    }
 };
 
 // ============================================================================
@@ -106,10 +133,62 @@ struct ScanReplies {
 };
 
 // ============================================================================
-// TARGET REPORT - ИСПРАВЛЕННАЯ ВЕРСИЯ
+// REPLY POOLS
 // ============================================================================
 
-// Типобезопасный указатель на источник ответа
+/**
+ * @brief Глобальные пулы для RBS и UVD ответов
+ */
+class ReplyPools {
+public:
+    static ReplyPools& instance() {
+        static ReplyPools instance;
+        return instance;
+    }
+    
+    core::ObjectPool<RBSReply>& rbs_pool() { return rbs_pool_; }
+    core::ObjectPool<UVDReply>& uvd_pool() { return uvd_pool_; }
+    
+    /**
+     * @brief Получить RBS ответ из пула
+     */
+    core::PooledObject<RBSReply> acquire_rbs() {
+        return core::PooledObject<RBSReply>(rbs_pool_, rbs_pool_.acquire());
+    }
+    
+    /**
+     * @brief Получить UVD ответ из пула
+     */
+    core::PooledObject<UVDReply> acquire_uvd() {
+        return core::PooledObject<UVDReply>(uvd_pool_, uvd_pool_.acquire());
+    }
+    
+    /**
+     * @brief Получить статистику пулов
+     */
+    struct PoolStats {
+        core::ObjectPool<RBSReply>::Stats rbs_stats;
+        core::ObjectPool<UVDReply>::Stats uvd_stats;
+    };
+    
+    PoolStats get_stats() const {
+        PoolStats stats;
+        stats.rbs_stats = rbs_pool_.get_stats();
+        stats.uvd_stats = uvd_pool_.get_stats();
+        return stats;
+    }
+    
+private:
+    ReplyPools() = default;
+    
+    core::ObjectPool<RBSReply> rbs_pool_{64, 4096};
+    core::ObjectPool<UVDReply> uvd_pool_{64, 4096};
+};
+
+// ============================================================================
+// TARGET REPORT
+// ============================================================================
+
 using ReplySource = std::variant<const RBSReply*, const UVDReply*>;
 
 struct TargetReport {
@@ -119,7 +198,6 @@ struct TargetReport {
     double azimuth_deg{0.0};
     double range_m{0.0};
     
-    // Используем отдельные структуры вместо union
     struct RBSData {
         uint16_t mode3a_code{0};
         uint16_t modec_altitude{0};
@@ -142,7 +220,6 @@ struct TargetReport {
         }
     };
     
-    // Храним оба набора данных, используем флаг type для выбора
     RBSData rbs;
     UVDData uvd;
     
@@ -151,12 +228,9 @@ struct TargetReport {
     bool is_sls_blanked{false};
     bool is_garbled{false};
     
-    // ИСПРАВЛЕНО: используем variant вместо vector<const void*>
     std::vector<ReplySource> sources;
     
-    // Конструктор по умолчанию
     TargetReport() : type(SourceType::RBS) {
-        // Инициализация всех полей
         x = 0.0;
         y = 0.0;
         azimuth_deg = 0.0;
@@ -165,24 +239,20 @@ struct TargetReport {
         is_reflection = false;
         is_sls_blanked = false;
         is_garbled = false;
-        // rbs и uvd инициализируются автоматически
     }
     
-    // Конструктор для RBS
     static TargetReport make_rbs() {
         TargetReport report;
         report.type = SourceType::RBS;
         return report;
     }
     
-    // Конструктор для UVD
     static TargetReport make_uvd() {
         TargetReport report;
         report.type = SourceType::UVD;
         return report;
     }
     
-    // Добавить источник ответа (типобезопасно)
     void add_source(const RBSReply* source) {
         sources.emplace_back(source);
     }
@@ -191,7 +261,6 @@ struct TargetReport {
         sources.emplace_back(source);
     }
     
-    // Получить все RBS источники
     std::vector<const RBSReply*> get_rbs_sources() const {
         std::vector<const RBSReply*> result;
         for (const auto& s : sources) {
@@ -202,7 +271,6 @@ struct TargetReport {
         return result;
     }
     
-    // Получить все UVD источники
     std::vector<const UVDReply*> get_uvd_sources() const {
         std::vector<const UVDReply*> result;
         for (const auto& s : sources) {
@@ -213,33 +281,15 @@ struct TargetReport {
         return result;
     }
     
-    // Проверить, есть ли источники
     bool has_sources() const {
         return !sources.empty();
     }
     
-    // Очистить источники
     void clear_sources() {
         sources.clear();
     }
 };
 
-// ============================================================================
-// ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ РАБОТЫ С ИСТОЧНИКАМИ
-// ============================================================================
-
-/**
- * @brief Обойти все источники в отчете с помощью лямбды
- * 
- * Пример использования:
- * visit_sources(report.sources, [](const auto* source) {
- *     if constexpr (std::is_same_v<decltype(source), const RBSReply*>) {
- *         // Работа с RBS
- *     } else if constexpr (std::is_same_v<decltype(source), const UVDReply*>) {
- *         // Работа с UVD
- *     }
- * });
- */
 template<typename Visitor>
 void visit_sources(const std::vector<ReplySource>& sources, Visitor&& visitor) {
     for (const auto& source : sources) {
@@ -251,20 +301,6 @@ void visit_sources(const std::vector<ReplySource>& sources, Visitor&& visitor) {
             }
         }, source);
     }
-}
-
-/**
- * @brief Обойти все источники в отчете с помощью лямбды (перегрузка для одного источника)
- */
-template<typename Visitor>
-void visit_source(const ReplySource& source, Visitor&& visitor) {
-    std::visit([&visitor](const auto* ptr) {
-        if constexpr (std::is_same_v<decltype(ptr), const RBSReply*>) {
-            visitor(ptr);
-        } else if constexpr (std::is_same_v<decltype(ptr), const UVDReply*>) {
-            visitor(ptr);
-        }
-    }, source);
 }
 
 } // namespace radar

@@ -128,7 +128,10 @@ RBSReply ReplySimulator::generate_rbs(
                   ", range=" + std::to_string(range) + ", code=0" + 
                   std::to_string(code12) + ", spi=" + (spi ? "true" : "false"));
     
-    RBSReply reply;
+    // Используем пул для RBS
+    auto pooled = ReplyPools::instance().acquire_rbs();
+    RBSReply& reply = *pooled;
+    
     reply.azimuth = azimuth;
     reply.range = range;
     reply.code12 = code12 & 0x0FFF;
@@ -165,7 +168,6 @@ RBSReply ReplySimulator::generate_rbs(
     
     if (config_.rbs.amp_variation > 0) {
         std::normal_distribution<double> amp_dist(1.0, config_.rbs.amp_variation);
-        // ИСПОЛЬЗУЕМ КОНСТАНТЫ
         const double AMP_VARIATION_MIN = 0.5;
         const double AMP_VARIATION_MAX = 1.5;
         int varied = 0;
@@ -188,6 +190,7 @@ RBSReply ReplySimulator::generate_rbs(
     reply.x = range_m * sin(az_rad);
     reply.y = range_m * cos(az_rad);
     
+    // Возвращаем копию, т.к. функция ожидает RBSReply по значению
     return reply;
 }
 
@@ -199,7 +202,10 @@ UVDReply ReplySimulator::generate_uvd(
     VRL_LOG_TRACE(modules::SIMULATOR, "Generating UVD: az=" + std::to_string(azimuth) + 
                   ", range=" + std::to_string(range) + ", data=0x" + std::to_string(data20));
     
-    UVDReply reply;
+    // Используем пул для UVD
+    auto pooled = ReplyPools::instance().acquire_uvd();
+    UVDReply& reply = *pooled;
+    
     reply.azimuth = azimuth;
     reply.range = range;
     reply.data20 = data20 & 0x0FFFFF;
@@ -225,7 +231,6 @@ UVDReply ReplySimulator::generate_uvd(
     add_noise_to_amplitudes(reply.ether_amplitudes, config_.uvd.snr_db);
     generate_sls_channel_uvd(reply);
     
-    // ИСПОЛЬЗУЕМ КОНСТАНТУ
     const uint8_t UVD_ERROR_THRESHOLD = 50;
     reply.error_mask = 0;
     int errors = 0;
