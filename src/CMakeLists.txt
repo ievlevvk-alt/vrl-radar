@@ -6,6 +6,9 @@ add_library(vrl_radar STATIC
     processing/cluster.cpp
     processing/garbling_solver.cpp
     processing/kalman_filter.cpp
+    processing/range_grouper.cpp      # НОВЫЙ ФАЙЛ
+    processing/rbs_processor.cpp      # НОВЫЙ ФАЙЛ
+    processing/uvd_processor.cpp      # НОВЫЙ ФАЙЛ
     processing/reply_processor.cpp
     processing/tracker.cpp
     simulation/simulator.cpp
@@ -17,7 +20,7 @@ target_link_libraries(vrl_radar
     ${SDL2_LIBRARIES}
     ${SDL2_TTF_LIBRARIES}
     ${EIGEN3_LIBRARIES}
-    nlohmann_json  # Используем имя библиотеки, а не ::target
+    nlohmann_json
 )
 
 target_include_directories(vrl_radar
@@ -34,8 +37,11 @@ target_include_directories(vrl_radar SYSTEM PUBLIC
 target_compile_definitions(vrl_radar
     PUBLIC
         $<$<BOOL:${ENABLE_VERBOSE_LOGGING}>:ENABLE_VERBOSE_LOGGING>
+        $<$<BOOL:${ENABLE_TRACE_LOGGING}>:VRL_ENABLE_TRACE_LOGGING=1>
+        $<$<BOOL:${ENABLE_DEBUG_LOGGING}>:VRL_ENABLE_DEBUG_LOGGING=1>
+        $<$<NOT:$<BOOL:${ENABLE_DEBUG_LOGGING}>>:VRL_ENABLE_DEBUG_LOGGING=0>
     PRIVATE
-        $<$<CONFIG:Debug>:DEBUG>
+        $<$<CONFIG:Debug>:CMAKE_BUILD_TYPE_DEBUG>
 )
 
 set_property(GLOBAL PROPERTY ENABLE_VERBOSE_LOGGING ${ENABLE_VERBOSE_LOGGING})

@@ -6,6 +6,9 @@
 #include "../core/config.h"
 #include "reply_processor.h"
 #include "garbling_solver.h"
+#include "range_grouper.h"
+#include "rbs_processor.h"
+#include "uvd_processor.h"
 #include <vector>
 #include <map>
 #include <set>
@@ -32,81 +35,13 @@ struct TargetCluster {
     std::map<uint16_t, std::vector<RBSReply>> rbs_by_azimuth;
     std::map<uint16_t, std::vector<UVDReply>> uvd_by_azimuth;
     
-    void add_scan(const ScanReplies& scan) {
-        if (scans.empty()) {
-            start_azimuth = scan.azimuth;
-            first_timestamp = scan.timestamp_ms;
-            min_range = 65535;
-            max_range = 0;
-        }
-        
-        scans.push_back(scan);
-        last_processed_azimuth = scan.azimuth;
-        
-        if (scan.has_replies()) {
-            last_reply_azimuth = scan.azimuth;
-            last_timestamp = scan.timestamp_ms;
-        }
-        
-        for (const auto& reply : scan.rbs_replies) {
-            rbs_by_azimuth[scan.azimuth].push_back(reply);
-            min_range = std::min(min_range, reply.range);
-            max_range = std::max(max_range, reply.range);
-        }
-        
-        for (const auto& reply : scan.uvd_replies) {
-            uvd_by_azimuth[scan.azimuth].push_back(reply);
-            min_range = std::min(min_range, reply.range);
-            max_range = std::max(max_range, reply.range);
-        }
-    }
-    
-    bool is_active(uint16_t current_azimuth, int max_gap_azimuth) const {
-        if (scans.empty()) return false;
-        
-        int16_t gap = current_azimuth - last_reply_azimuth;
-        if (gap < 0) gap += 4096;
-        return gap <= max_gap_azimuth;
-    }
-    
-    std::vector<RBSReply> get_all_rbs() const {
-        std::vector<RBSReply> result;
-        for (const auto& scan : scans) {
-            result.insert(result.end(), scan.rbs_replies.begin(), scan.rbs_replies.end());
-        }
-        return result;
-    }
-    
-    std::vector<UVDReply> get_all_uvd() const {
-        std::vector<UVDReply> result;
-        for (const auto& scan : scans) {
-            result.insert(result.end(), scan.uvd_replies.begin(), scan.uvd_replies.end());
-        }
-        return result;
-    }
-    
-    // Ширина кластера в дискретах азимута (только там, где были ответы)
-    uint16_t azimuth_span() const {
-        if (scans.empty()) return 0;
-        
-        int16_t span = last_reply_azimuth - start_azimuth;
-        if (span < 0) span += 4096;
-        return static_cast<uint16_t>(span);
-    }
-    
-    // Ширина кластера по дальности
-    uint16_t range_span() const {
-        return max_range - min_range;
-    }
-    
-    // Количество зондирований с ответами
-    size_t reply_scans_count() const {
-        size_t count = 0;
-        for (const auto& scan : scans) {
-            if (scan.has_replies()) count++;
-        }
-        return count;
-    }
+    void add_scan(const ScanReplies& scan);
+    bool is_active(uint16_t current_azimuth, int max_gap_azimuth) const;
+    std::vector<RBSReply> get_all_rbs() const;
+    std::vector<UVDReply> get_all_uvd() const;
+    uint16_t azimuth_span() const;
+    uint16_t range_span() const;
+    size_t reply_scans_count() const;
 };
 
 // ============================================================================
@@ -138,7 +73,7 @@ private:
 };
 
 // ============================================================================
-// CLUSTER PROCESSOR
+// CLUSTER PROCESSOR - ОБНОВЛЕННАЯ ВЕРСИЯ
 // ============================================================================
 
 class ClusterProcessor {
@@ -147,52 +82,42 @@ public:
     
     std::vector<TargetReport> process_cluster(const TargetCluster& cluster);
     
-    void set_range_tolerance(uint16_t bins) { range_tolerance_ = bins; }
-    void set_min_hits(int hits) { min_hits_ = hits; }
-    void set_confidence_threshold(uint8_t thresh) { confidence_threshold_ = thresh; }
-    void enable_garbling_splitting(bool enable) { split_garbled_ = enable; }
-    void set_garbling_solver(std::unique_ptr<GarblingSolver> solver) {
-        garbling_solver_ = std::move(solver);
+    // Настройка параметров
+    void set_range_tolerance(uint16_t bins) { 
+        range_grouper_.set_tolerance(bins); 
     }
+    void set_min_hits(int hits) { 
+        min_hits_ = hits;
+        rbs_processor_.set_min_hits(hits);
+        uvd_processor_.set_min_hits(hits);
+    }
+    void set_confidence_threshold(double thresh) {
+        rbs_processor_.set_min_confidence(thresh);
+        uvd_processor_.set_min_confidence(thresh);
+    }
+    void enable_garbling_splitting(bool enable) { split_garbled_ = enable; }
+    void set_garbling_solver(std::unique_ptr<GarblingSolver> solver);
     void set_debug(bool enable) { debug_ = enable; }
     
+    // Доступ к подпроцессорам
+    RBSProcessor& get_rbs_processor() { return rbs_processor_; }
+    UVDProcessor& get_uvd_processor() { return uvd_processor_; }
+    RangeGrouper& get_range_grouper() { return range_grouper_; }
+    
 private:
-    struct RangeGroup {
-        uint16_t nominal_range{0};
-        std::vector<const RBSReply*> rbs_replies;
-        std::vector<const UVDReply*> uvd_replies;
-        std::set<uint16_t> azimuths;
-        
-        void add_rbs(const RBSReply* reply) {
-            rbs_replies.push_back(reply);
-            azimuths.insert(reply->azimuth);
-        }
-        
-        void add_uvd(const UVDReply* reply) {
-            uvd_replies.push_back(reply);
-            azimuths.insert(reply->azimuth);
-        }
-        
-        size_t total_replies() const {
-            return rbs_replies.size() + uvd_replies.size();
-        }
-    };
-    
-    std::vector<RangeGroup> group_by_range(const TargetCluster& cluster);
-    double average_azimuth(const std::vector<uint16_t>& azimuths);
-    bool check_sidelobe(const RBSReply& reply) const;
-    bool check_sidelobe(const UVDReply& reply) const;
-    void decode_uvd_info(uint32_t data20, TargetReport& report);
-    
-    std::optional<TargetReport> process_rbs_group(const RangeGroup& group);
-    std::optional<TargetReport> process_uvd_group(const RangeGroup& group);
-    std::vector<TargetReport> process_garbled_group(const RangeGroup& group);
+    /**
+     * @brief Обработать группу с перекрытием (garbled)
+     * @param group группа ответов
+     * @return вектор отчетов о целях
+     */
+    std::vector<TargetReport> process_garbled_group(const RangeGrouper::RangeGroup& group);
     
     RadarConfig config_;
-    ReplyProcessor reply_processor_;
-    uint16_t range_tolerance_{5};
+    RangeGrouper range_grouper_;
+    RBSProcessor rbs_processor_;
+    UVDProcessor uvd_processor_;
+    
     int min_hits_{2};
-    uint8_t confidence_threshold_{50};
     bool split_garbled_{true};
     bool debug_{false};
     std::unique_ptr<GarblingSolver> garbling_solver_;

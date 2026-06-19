@@ -1,7 +1,7 @@
 // include/vrl/radar/utils/logger.h
 #pragma once
 
-#include "../core/logging_config.h"  // <-- ДОБАВЛЯЕМ
+#include "../core/logging_config.h"
 #include <string>
 #include <sstream>
 #include <fstream>
@@ -13,6 +13,42 @@
 #include <vector>
 #include <functional>
 #include <map>
+
+// ============================================================================
+// КОНТРОЛЬ УРОВНЯ ЛОГИРОВАНИЯ НА ЭТАПЕ КОМПИЛЯЦИИ
+// ============================================================================
+
+// Используем другие имена для макросов, чтобы не конфликтовать с enum
+#ifdef DEBUG
+    #undef DEBUG
+#endif
+
+#ifdef TRACE
+    #undef TRACE
+#endif
+
+// По умолчанию TRACE и DEBUG включены только в Debug сборке
+#ifdef CMAKE_BUILD_TYPE_DEBUG
+    #define VRL_ENABLE_TRACE_LOGGING 1
+    #define VRL_ENABLE_DEBUG_LOGGING 1
+#else
+    // В Release сборке TRACE отключен, DEBUG может быть включен через флаг
+    #ifdef ENABLE_VERBOSE_LOGGING
+        #define VRL_ENABLE_DEBUG_LOGGING 1
+    #else
+        #define VRL_ENABLE_DEBUG_LOGGING 0
+    #endif
+    #define VRL_ENABLE_TRACE_LOGGING 0
+#endif
+
+// Возможность переопределить через CMake
+#ifndef VRL_ENABLE_TRACE_LOGGING
+    #define VRL_ENABLE_TRACE_LOGGING 0
+#endif
+
+#ifndef VRL_ENABLE_DEBUG_LOGGING
+    #define VRL_ENABLE_DEBUG_LOGGING 1
+#endif
 
 namespace vrl {
 namespace radar {
@@ -85,24 +121,17 @@ class Logger {
 public:
     static Logger& instance();
     
-    // Установка уровня по умолчанию
     void set_default_level(LogLevel level) { default_level_ = level; }
     LogLevel get_default_level() const { return default_level_; }
     
-    // Установка уровня для конкретного модуля
     void set_module_level(const std::string& module, LogLevel level);
     LogLevel get_module_level(const std::string& module) const;
     
-    // Глобальные настройки
     void set_console_output(bool enable) { console_output_ = enable; }
     void set_file_output(const std::string& filename);
     void set_timestamp_format(const std::string& format) { timestamp_format_ = format; }
     
-    /**
-     * @brief Настроить логгер из конфигурации
-     * @param config структура с настройками логирования
-     */
-    void configure(const LoggingConfig& config);  // <-- ТЕПЕРЬ ИЗВЕСТЕН LoggingConfig
+    void configure(const LoggingConfig& config);
     
     using LogHandler = std::function<void(LogLevel, const std::string&, const std::string&)>;
     void add_handler(LogHandler handler) { handlers_.push_back(handler); }
@@ -167,13 +196,33 @@ private:
 // МАКРОСЫ ДЛЯ УДОБНОГО ЛОГИРОВАНИЯ
 // ============================================================================
 
-// Основные макросы логирования - используют уровень модуля
-#define VRL_LOG_TRACE(module, msg) \
-    vrl::radar::utils::Logger::instance().log(vrl::radar::utils::LogLevel::TRACE, module, msg)
+// TRACE - полностью отключается на этапе компиляции в Release сборке
+#if VRL_ENABLE_TRACE_LOGGING
+    #define VRL_LOG_TRACE(module, msg) \
+        vrl::radar::utils::Logger::instance().log(vrl::radar::utils::LogLevel::TRACE, module, msg)
+    #define VRL_LOG_TRACE_IF(module, condition, msg) \
+        if (condition) { \
+            vrl::radar::utils::Logger::instance().log(vrl::radar::utils::LogLevel::TRACE, module, msg); \
+        }
+#else
+    #define VRL_LOG_TRACE(module, msg) ((void)0)
+    #define VRL_LOG_TRACE_IF(module, condition, msg) ((void)0)
+#endif
 
-#define VRL_LOG_DEBUG(module, msg) \
-    vrl::radar::utils::Logger::instance().log(vrl::radar::utils::LogLevel::DEBUG, module, msg)
+// DEBUG - отключается только если явно выключен
+#if VRL_ENABLE_DEBUG_LOGGING
+    #define VRL_LOG_DEBUG(module, msg) \
+        vrl::radar::utils::Logger::instance().log(vrl::radar::utils::LogLevel::DEBUG, module, msg)
+    #define VRL_LOG_DEBUG_IF(module, condition, msg) \
+        if (condition) { \
+            vrl::radar::utils::Logger::instance().log(vrl::radar::utils::LogLevel::DEBUG, module, msg); \
+        }
+#else
+    #define VRL_LOG_DEBUG(module, msg) ((void)0)
+    #define VRL_LOG_DEBUG_IF(module, condition, msg) ((void)0)
+#endif
 
+// INFO и выше - всегда включены
 #define VRL_LOG_INFO(module, msg) \
     vrl::radar::utils::Logger::instance().log(vrl::radar::utils::LogLevel::INFO, module, msg)
 
@@ -186,10 +235,10 @@ private:
 #define VRL_LOG_FATAL(module, msg) \
     vrl::radar::utils::Logger::instance().log(vrl::radar::utils::LogLevel::FATAL, module, msg)
 
-// Вербозное логирование - включается только если определена ENABLE_VERBOSE_LOGGING
+// Вербозное логирование
 #ifdef ENABLE_VERBOSE_LOGGING
     #define VRL_LOG_VERBOSE(module, msg) \
-        vrl::radar::utils::Logger::instance().log(vrl::radar::utils::LogLevel::DEBUG, module, msg)
+        VRL_LOG_DEBUG(module, msg)
     #define VRL_LOG_VERBOSE_STREAM(module) \
         vrl::radar::utils::Logger::LogStream(vrl::radar::utils::Logger::instance(), \
                                              vrl::radar::utils::LogLevel::DEBUG, module)

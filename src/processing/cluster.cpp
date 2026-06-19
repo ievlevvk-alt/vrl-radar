@@ -14,6 +14,83 @@ namespace vrl {
 namespace radar {
 
 // ============================================================================
+// TARGET CLUSTER IMPLEMENTATION
+// ============================================================================
+
+void TargetCluster::add_scan(const ScanReplies& scan) {
+    if (scans.empty()) {
+        start_azimuth = scan.azimuth;
+        first_timestamp = scan.timestamp_ms;
+        min_range = 65535;
+        max_range = 0;
+    }
+    
+    scans.push_back(scan);
+    last_processed_azimuth = scan.azimuth;
+    
+    if (scan.has_replies()) {
+        last_reply_azimuth = scan.azimuth;
+        last_timestamp = scan.timestamp_ms;
+    }
+    
+    for (const auto& reply : scan.rbs_replies) {
+        rbs_by_azimuth[scan.azimuth].push_back(reply);
+        min_range = std::min(min_range, reply.range);
+        max_range = std::max(max_range, reply.range);
+    }
+    
+    for (const auto& reply : scan.uvd_replies) {
+        uvd_by_azimuth[scan.azimuth].push_back(reply);
+        min_range = std::min(min_range, reply.range);
+        max_range = std::max(max_range, reply.range);
+    }
+}
+
+bool TargetCluster::is_active(uint16_t current_azimuth, int max_gap_azimuth) const {
+    if (scans.empty()) return false;
+    
+    int16_t gap = current_azimuth - last_reply_azimuth;
+    if (gap < 0) gap += 4096;
+    return gap <= max_gap_azimuth;
+}
+
+std::vector<RBSReply> TargetCluster::get_all_rbs() const {
+    std::vector<RBSReply> result;
+    for (const auto& scan : scans) {
+        result.insert(result.end(), scan.rbs_replies.begin(), scan.rbs_replies.end());
+    }
+    return result;
+}
+
+std::vector<UVDReply> TargetCluster::get_all_uvd() const {
+    std::vector<UVDReply> result;
+    for (const auto& scan : scans) {
+        result.insert(result.end(), scan.uvd_replies.begin(), scan.uvd_replies.end());
+    }
+    return result;
+}
+
+uint16_t TargetCluster::azimuth_span() const {
+    if (scans.empty()) return 0;
+    
+    int16_t span = last_reply_azimuth - start_azimuth;
+    if (span < 0) span += 4096;
+    return static_cast<uint16_t>(span);
+}
+
+uint16_t TargetCluster::range_span() const {
+    return max_range - min_range;
+}
+
+size_t TargetCluster::reply_scans_count() const {
+    size_t count = 0;
+    for (const auto& scan : scans) {
+        if (scan.has_replies()) count++;
+    }
+    return count;
+}
+
+// ============================================================================
 // CLUSTER TRACKER IMPLEMENTATION
 // ============================================================================
 
@@ -153,268 +230,21 @@ void ClusterTracker::reset() {
 // CLUSTER PROCESSOR IMPLEMENTATION
 // ============================================================================
 
-ClusterProcessor::ClusterProcessor(const RadarConfig& config) 
-    : config_(config), reply_processor_(config) {
+ClusterProcessor::ClusterProcessor(const RadarConfig& config)
+    : config_(config)
+    , range_grouper_(5)
+    , rbs_processor_(config)
+    , uvd_processor_(config) {
     VRL_LOG_DEBUG(modules::CLUSTER, "ClusterProcessor initialized: range_bin_rbs=" + 
                   std::to_string(config.range_bin_rbs) + ", range_bin_uvd=" + 
                   std::to_string(config.range_bin_uvd));
 }
 
-std::vector<ClusterProcessor::RangeGroup> ClusterProcessor::group_by_range(const TargetCluster& cluster) {
-    VRL_LOG_TRACE(modules::CLUSTER, "Grouping " + std::to_string(cluster.scans.size()) + " scans by range");
-    
-    std::vector<RangeGroup> groups;
-    std::map<uint16_t, RangeGroup> range_map;
-    
-    for (const auto& scan : cluster.scans) {
-        for (const auto& reply : scan.rbs_replies) {
-            bool added = false;
-            for (auto& [nominal, group] : range_map) {
-                if (std::abs(static_cast<int16_t>(reply.range - nominal)) <= range_tolerance_) {
-                    group.add_rbs(&reply);
-                    added = true;
-                    break;
-                }
-            }
-            if (!added) {
-                RangeGroup new_group;
-                new_group.nominal_range = reply.range;
-                new_group.add_rbs(&reply);
-                range_map[reply.range] = new_group;
-            }
-        }
-    }
-    
-    for (const auto& scan : cluster.scans) {
-        for (const auto& reply : scan.uvd_replies) {
-            bool added = false;
-            for (auto& [nominal, group] : range_map) {
-                if (std::abs(static_cast<int16_t>(reply.range - nominal)) <= range_tolerance_) {
-                    group.add_uvd(&reply);
-                    added = true;
-                    break;
-                }
-            }
-            if (!added) {
-                RangeGroup new_group;
-                new_group.nominal_range = reply.range;
-                new_group.add_uvd(&reply);
-                range_map[reply.range] = new_group;
-            }
-        }
-    }
-    
-    for (auto& [_, group] : range_map) {
-        groups.push_back(std::move(group));
-    }
-    
-    VRL_LOG_TRACE(modules::CLUSTER, "Created " + std::to_string(groups.size()) + " range groups");
-    return groups;
+void ClusterProcessor::set_garbling_solver(std::unique_ptr<GarblingSolver> solver) {
+    garbling_solver_ = std::move(solver);
 }
 
-double ClusterProcessor::average_azimuth(const std::vector<uint16_t>& azimuths) {
-    if (azimuths.empty()) return 0.0;
-    
-    const int AZIMUTH_HALF = 2048;
-    bool has_wraparound = false;
-    for (size_t i = 1; i < azimuths.size(); ++i) {
-        if (std::abs(static_cast<int16_t>(azimuths[i] - azimuths[i-1])) > AZIMUTH_HALF) {
-            has_wraparound = true;
-            break;
-        }
-    }
-    
-    if (!has_wraparound) {
-        double sum = 0.0;
-        for (auto az : azimuths) sum += az;
-        return sum / azimuths.size();
-    } else {
-        double sum_sin = 0.0, sum_cos = 0.0;
-        double az_per_bin = 360.0 / 4096.0;
-        for (auto az : azimuths) {
-            double rad = az * az_per_bin * M_PI / 180.0;
-            sum_sin += std::sin(rad);
-            sum_cos += std::cos(rad);
-        }
-        double avg_rad = std::atan2(sum_sin, sum_cos);
-        double avg_deg = avg_rad * 180.0 / M_PI;
-        if (avg_deg < 0) avg_deg += 360.0;
-        return avg_deg / az_per_bin;
-    }
-}
-
-bool ClusterProcessor::check_sidelobe(const RBSReply& reply) const {
-    return utils::is_sidelobe(reply, 3.0);
-}
-
-bool ClusterProcessor::check_sidelobe(const UVDReply& reply) const {
-    return utils::is_sidelobe(reply, 3.0);
-}
-
-void ClusterProcessor::decode_uvd_info(uint32_t data20, TargetReport& report) {
-    report.uvd.raw_data20 = data20;
-    
-    uint32_t octal_part = data20 & 0x7FFFF;
-    for (int i = 4; i >= 0; --i) {
-        report.uvd.octal_id[i] = (octal_part >> (i * 3)) & 0x7;
-    }
-    
-    report.uvd.altitude = (data20 >> 3) & 0x7FF;
-    report.uvd.fuel = (data20 >> 14) & 0x0F;
-    report.uvd.pressure_ref = (data20 >> 18) & 0x01;
-}
-
-std::optional<TargetReport> ClusterProcessor::process_rbs_group(const RangeGroup& group) {
-    if (group.rbs_replies.empty()) return std::nullopt;
-    
-    VRL_LOG_TRACE(modules::CLUSTER, "Processing RBS group: " + std::to_string(group.rbs_replies.size()) + 
-                  " replies at range " + std::to_string(group.nominal_range));
-    
-    TargetReport report = TargetReport::make_rbs();
-    report.type = TargetReport::SourceType::RBS;
-    report.signal_strength = 0;
-    report.is_reflection = false;
-    report.is_sls_blanked = false;
-    report.is_garbled = false;
-    
-    std::vector<uint16_t> azimuths;
-    for (const auto* reply : group.rbs_replies) {
-        azimuths.push_back(reply->azimuth);
-        report.sources.push_back(reply);
-    }
-    
-    double az_per_bin = 360.0 / 4096.0;
-    report.azimuth_deg = average_azimuth(azimuths) * az_per_bin;
-    report.range_m = group.nominal_range * config_.range_bin_rbs;
-    polar_to_xy(report.range_m, report.azimuth_deg, report.x, report.y);
-    
-    std::map<uint16_t, int> code_counts;
-    std::map<uint16_t, const RBSReply*> code_to_reply;
-    std::map<uint16_t, bool> code_spi;
-    std::map<uint16_t, double> code_confidence;
-    
-    for (const auto* reply : group.rbs_replies) {
-        code_counts[reply->code12]++;
-        code_to_reply[reply->code12] = reply;
-        if (reply->spi) {
-            code_spi[reply->code12] = true;
-        }
-        
-        ReplyFeatures features = reply_processor_.analyze_rbs(*reply);
-        code_confidence[reply->code12] = std::max(code_confidence[reply->code12], features.confidence);
-    }
-    
-    uint16_t best_code = 0;
-    int max_count = 0;
-    double best_confidence = 0;
-    
-    // ИСПОЛЬЗУЕМ КОНФИГУРАЦИОННЫЙ ПОРОГ
-    double min_confidence = 0.3;
-    
-    for (const auto& [code, count] : code_counts) {
-        double confidence = code_confidence[code];
-        if (confidence > best_confidence || 
-            (confidence == best_confidence && count > max_count)) {
-            best_confidence = confidence;
-            max_count = count;
-            best_code = code;
-        }
-    }
-    
-    if (max_count > 0 && best_confidence > min_confidence) {
-        const auto* best_reply = code_to_reply[best_code];
-        report.rbs.mode3a_code = best_code;
-        report.rbs.spi = code_spi[best_code];
-        report.signal_strength = static_cast<uint8_t>(best_confidence * 255);
-        report.is_sls_blanked = check_sidelobe(*best_reply);
-        // ИСПОЛЬЗУЕМ КОНФИГУРАЦИОННЫЙ ПОРОГ
-        double garbled_threshold = 0.5;
-        report.is_garbled = (best_confidence < garbled_threshold);
-        
-        VRL_LOG_TRACE(modules::CLUSTER, "RBS target: code=0" + std::to_string(best_code) + 
-                      ", conf=" + std::to_string(best_confidence));
-    } else {
-        VRL_LOG_WARN(modules::CLUSTER, "RBS group rejected: low confidence (" + 
-                     std::to_string(best_confidence) + ")");
-        return std::nullopt;
-    }
-    
-    return report;
-}
-
-std::optional<TargetReport> ClusterProcessor::process_uvd_group(const RangeGroup& group) {
-    if (group.uvd_replies.empty()) return std::nullopt;
-    
-    VRL_LOG_TRACE(modules::CLUSTER, "Processing UVD group: " + std::to_string(group.uvd_replies.size()) + 
-                  " replies at range " + std::to_string(group.nominal_range));
-    
-    TargetReport report = TargetReport::make_uvd();
-    report.type = TargetReport::SourceType::UVD;
-    report.signal_strength = 0;
-    report.is_reflection = false;
-    report.is_sls_blanked = false;
-    report.is_garbled = false;
-    
-    std::vector<uint16_t> azimuths;
-    for (const auto* reply : group.uvd_replies) {
-        azimuths.push_back(reply->azimuth);
-        report.sources.push_back(reply);
-    }
-    
-    double az_per_bin = 360.0 / 4096.0;
-    report.azimuth_deg = average_azimuth(azimuths) * az_per_bin;
-    report.range_m = group.nominal_range * config_.range_bin_uvd;
-    polar_to_xy(report.range_m, report.azimuth_deg, report.x, report.y);
-    
-    std::map<uint32_t, int> data_counts;
-    std::map<uint32_t, const UVDReply*> data_to_reply;
-    std::map<uint32_t, double> data_confidence;
-    
-    for (const auto* reply : group.uvd_replies) {
-        data_counts[reply->data20]++;
-        data_to_reply[reply->data20] = reply;
-        
-        ReplyFeatures features = reply_processor_.analyze_uvd(*reply);
-        data_confidence[reply->data20] = std::max(data_confidence[reply->data20], features.confidence);
-    }
-    
-    uint32_t best_data = 0;
-    int max_count = 0;
-    double best_confidence = 0;
-    
-    // ИСПОЛЬЗУЕМ КОНФИГУРАЦИОННЫЕ ПОРОГИ
-    double min_confidence = 0.3;
-    double garbled_threshold = 0.5;
-    
-    for (const auto& [data, count] : data_counts) {
-        double confidence = data_confidence[data];
-        if (confidence > best_confidence ||
-            (confidence == best_confidence && count > max_count)) {
-            best_confidence = confidence;
-            max_count = count;
-            best_data = data;
-        }
-    }
-    
-    if (max_count > 0 && best_confidence > min_confidence) {
-        const auto* best_reply = data_to_reply[best_data];
-        decode_uvd_info(best_data, report);
-        report.signal_strength = static_cast<uint8_t>(best_confidence * 255);
-        report.is_sls_blanked = check_sidelobe(*best_reply);
-        report.is_garbled = (best_confidence < garbled_threshold) || (best_reply->error_mask != 0);
-        
-        VRL_LOG_TRACE(modules::CLUSTER, "UVD target: data=0x" + std::to_string(best_data) + 
-                      ", conf=" + std::to_string(best_confidence));
-    } else {
-        VRL_LOG_WARN(modules::CLUSTER, "UVD group rejected: low confidence (" + 
-                     std::to_string(best_confidence) + ")");
-        return std::nullopt;
-    }
-    
-    return report;
-}
-
-std::vector<TargetReport> ClusterProcessor::process_garbled_group(const RangeGroup& group) {
+std::vector<TargetReport> ClusterProcessor::process_garbled_group(const RangeGrouper::RangeGroup& group) {
     std::vector<TargetReport> reports;
     
     if (!garbling_solver_ || group.rbs_replies.empty()) {
@@ -431,7 +261,6 @@ std::vector<TargetReport> ClusterProcessor::process_garbled_group(const RangeGro
     
     auto result = garbling_solver_->separate_rbs(all_rbs);
     
-    // ИСПОЛЬЗУЕМ КОНФИГУРАЦИОННЫЙ ПОРОГ
     double confidence_threshold = 0.5;
     
     if (result.confidence > confidence_threshold && !result.separated_replies.empty()) {
@@ -448,7 +277,7 @@ std::vector<TargetReport> ClusterProcessor::process_garbled_group(const RangeGro
             report.rbs.mode3a_code = separated.code12;
             report.rbs.spi = separated.spi;
             report.is_garbled = false;
-            report.is_sls_blanked = check_sidelobe(separated);
+            report.is_sls_blanked = false;
             
             polar_to_xy(report.range_m, report.azimuth_deg, report.x, report.y);
             reports.push_back(report);
@@ -467,33 +296,38 @@ std::vector<TargetReport> ClusterProcessor::process_cluster(const TargetCluster&
     
     std::vector<TargetReport> reports;
     
-    auto range_groups = group_by_range(cluster);
+    // Группируем по дальности
+    auto range_groups = range_grouper_.group(cluster);
     
     for (const auto& group : range_groups) {
-        if (group.total_replies() < static_cast<size_t>(min_hits_)) {
+        // Проверяем минимальное количество ответов
+        if (static_cast<int>(group.total_replies()) < min_hits_) {
             VRL_LOG_TRACE(modules::CLUSTER, "Skipping group: insufficient replies (" + 
                           std::to_string(group.total_replies()) + " < " + 
                           std::to_string(min_hits_) + ")");
             continue;
         }
         
-        bool has_overlaps = false;
-        if (!group.rbs_replies.empty() && group.rbs_replies.size() > 1) {
-            has_overlaps = true;
-        }
-        
-        if (has_overlaps && split_garbled_ && garbling_solver_) {
+        // Обработка перекрытий (garbling)
+        if (group.has_overlap() && split_garbled_ && garbling_solver_) {
             auto split_reports = process_garbled_group(group);
             reports.insert(reports.end(), split_reports.begin(), split_reports.end());
-        } else {
-            if (!group.rbs_replies.empty()) {
-                auto report = process_rbs_group(group);
-                if (report) reports.push_back(*report);
+            continue;
+        }
+        
+        // Обработка RBS
+        if (group.has_rbs()) {
+            auto report = rbs_processor_.process_group(group);
+            if (report) {
+                reports.push_back(*report);
             }
-            
-            if (!group.uvd_replies.empty()) {
-                auto report = process_uvd_group(group);
-                if (report) reports.push_back(*report);
+        }
+        
+        // Обработка UVD
+        if (group.has_uvd()) {
+            auto report = uvd_processor_.process_group(group);
+            if (report) {
+                reports.push_back(*report);
             }
         }
     }

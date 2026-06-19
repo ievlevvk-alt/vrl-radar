@@ -12,10 +12,17 @@ option(BUILD_TOOLS "Build tools" ON)
 option(BUILD_TESTS "Build tests" OFF)
 option(BUILD_EXAMPLES "Build examples" OFF)
 option(ENABLE_VERBOSE_LOGGING "Enable verbose debug logging" OFF)
+option(ENABLE_TRACE_LOGGING "Enable TRACE level logging (very verbose)" OFF)
+option(ENABLE_DEBUG_LOGGING "Enable DEBUG level logging" ON)
 
 # Устанавливаем режим сборки по умолчанию
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE "Debug" CACHE STRING "Build type" FORCE)
+endif()
+
+# Определяем, Debug ли сборка (для логирования)
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    add_compile_definitions(CMAKE_BUILD_TYPE_DEBUG)
 endif()
 
 # ============================================================================
@@ -30,7 +37,7 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(SDL2 REQUIRED sdl2)
 pkg_check_modules(SDL2_TTF REQUIRED SDL2_ttf)
 
-# nlohmann/json - простой поиск через find_path
+# nlohmann/json
 find_path(NLOHMANN_INCLUDE_DIR
     NAMES nlohmann/json.hpp
     PATHS
@@ -49,7 +56,7 @@ else()
     message(FATAL_ERROR "nlohmann/json not found. Please install: sudo apt-get install nlohmann-json3-dev")
 endif()
 
-# Google Test (только если BUILD_TESTS включен)
+# Google Test
 if(BUILD_TESTS)
     find_package(GTest REQUIRED)
     include(GoogleTest)
@@ -63,15 +70,17 @@ endif()
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 include_directories(${EIGEN3_INCLUDE_DIR})
 
-# Сообщаем о найденных зависимостях
 message(STATUS "Using Eigen3 from: ${EIGEN3_INCLUDE_DIR}")
 message(STATUS "Using SDL2: ${SDL2_LIBRARIES}")
 message(STATUS "Using SDL2_ttf: ${SDL2_TTF_LIBRARIES}")
 message(STATUS "Using nlohmann/json: ${NLOHMANN_INCLUDE_DIR}")
 
-# Передаем опции
+# Передаем опции (без DEBUG макроса)
 add_compile_definitions(
     $<$<BOOL:${ENABLE_VERBOSE_LOGGING}>:ENABLE_VERBOSE_LOGGING>
+    $<$<BOOL:${ENABLE_TRACE_LOGGING}>:VRL_ENABLE_TRACE_LOGGING=1>
+    $<$<BOOL:${ENABLE_DEBUG_LOGGING}>:VRL_ENABLE_DEBUG_LOGGING=1>
+    $<$<NOT:$<BOOL:${ENABLE_DEBUG_LOGGING}>>:VRL_ENABLE_DEBUG_LOGGING=0>
 )
 
 # ============================================================================
@@ -103,5 +112,7 @@ message(STATUS "Build tools:         ${BUILD_TOOLS}")
 message(STATUS "Build tests:         ${BUILD_TESTS}")
 message(STATUS "Build examples:      ${BUILD_EXAMPLES}")
 message(STATUS "Verbose logging:     ${ENABLE_VERBOSE_LOGGING}")
+message(STATUS "Trace logging:       ${ENABLE_TRACE_LOGGING}")
+message(STATUS "Debug logging:       ${ENABLE_DEBUG_LOGGING}")
 message(STATUS "=======================================")
 message(STATUS "")

@@ -1111,3 +1111,51 @@ public:
 Проект демонстрирует высокий уровень владения C++ и понимания предметной области. Система логирования, конфигурация и визуализация выполнены на профессиональном уровне.
 
 ===============================
+
+1. Условная компиляция для TRACE
+cpp
+
+#if VRL_ENABLE_TRACE
+    #define VRL_LOG_TRACE(module, msg) ... 
+#else
+    #define VRL_LOG_TRACE(module, msg) ((void)0)
+#endif
+
+2. Управление через CMake
+
+    ENABLE_TRACE_LOGGING - включает TRACE (по умолчанию OFF)
+
+    ENABLE_DEBUG_LOGGING - включает DEBUG (по умолчанию ON)
+
+3. Автоматическое отключение в Release
+
+В Release сборке TRACE автоматически отключается для производительности.
+4. Новые макросы
+
+    VRL_LOG_TRACE_IF - условный TRACE с проверкой на этапе компиляции
+
+    VRL_LOG_DEBUG_IF - условный DEBUG с проверкой на этапе компиляции
+
+Использование
+Сборка с TRACE
+bash
+
+cd build
+cmake -DENABLE_TRACE_LOGGING=ON ..
+make -j4
+
+Сборка без TRACE (по умолчанию)
+bash
+
+cd build
+cmake ..
+make -j4
+
+Сборка с полным отключением DEBUG
+bash
+
+cd build
+cmake -DENABLE_DEBUG_LOGGING=OFF ..
+make -j4
+
+========================
