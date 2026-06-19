@@ -4,17 +4,105 @@
 #include <fstream>
 #include <set>
 #include <filesystem>
+#include <cmath>
 
 using namespace vrl::radar::utils;
 
 namespace vrl {
 namespace radar {
 
+// ============================================================================
+// ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ ВАЛИДАЦИИ
+// ============================================================================
+
+namespace {
+    // Базовые валидаторы
+    bool is_positive(double value) { return value > 0.0; }
+    bool is_non_negative(double value) { return value >= 0.0; }
+    bool is_in_range(double value, double min, double max) {
+        return value >= min && value <= max;
+    }
+    bool is_angle(double value) { return value >= 0.0 && value <= 360.0; }
+    bool is_percentage(double value) { return value >= 0.0 && value <= 1.0; }
+    bool is_snr(double value) { return value >= -10.0 && value <= 60.0; }
+    
+    // Валидаторы для целых чисел
+    bool is_positive_int(int value) { return value > 0; }
+    bool is_non_negative_int(int value) { return value >= 0; }
+    
+    // Валидаторы для беззнаковых целых
+    bool is_positive_uint16(uint16_t value) { return value > 0; }
+    bool is_positive_uint32(uint32_t value) { return value > 0; }
+    bool is_positive_uint8(uint8_t value) { return value > 0; }
+    bool is_non_negative_uint16(uint16_t value) { return value >= 0; }
+    bool is_non_negative_uint32(uint32_t value) { return value >= 0; }
+    bool is_non_negative_uint8(uint8_t value) { return value >= 0; }
+}
+
+
+
+// ============================================================================
+// ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ БЕЗОПАСНОГО ПОЛУЧЕНИЯ ЗНАЧЕНИЙ
+// ============================================================================
+
+// Общий шаблон для всех типов
+template<typename T>
+static bool safe_get_value(const json& j, const std::string& key, T& out,
+                           bool (*validator)(T) = nullptr,
+                           const std::string& error_msg = "") {
+    if (!j.contains(key)) {
+        VRL_LOG_DEBUG(modules::CONFIG, "Key not found: " + key + ", using default");
+        return false;
+    }
+    
+    try {
+        if constexpr (std::is_same<T, std::string>::value) {
+            if (!j[key].is_string()) {
+                VRL_LOG_WARN(modules::CONFIG, "Key " + key + " is not a string");
+                return false;
+            }
+            out = j[key].get<T>();
+        } else if constexpr (std::is_same<T, bool>::value) {
+            if (!j[key].is_boolean()) {
+                VRL_LOG_WARN(modules::CONFIG, "Key " + key + " is not a boolean");
+                return false;
+            }
+            out = j[key].get<T>();
+        } else if constexpr (std::is_arithmetic<T>::value) {
+            if (!j[key].is_number()) {
+                VRL_LOG_WARN(modules::CONFIG, "Key " + key + " is not a number");
+                return false;
+            }
+            out = j[key].get<T>();
+        } else {
+            out = j[key].get<T>();
+        }
+        
+        // Валидация
+        if (validator && !validator(out)) {
+            VRL_LOG_WARN(modules::CONFIG, "Validation failed for " + key + 
+                         (error_msg.empty() ? "" : ": " + error_msg));
+            return false;
+        }
+        
+        return true;
+    } catch (const std::exception& e) {
+        VRL_LOG_WARN(modules::CONFIG, "Failed to get value for " + key + 
+                     ": " + std::string(e.what()));
+        return false;
+    }
+}
+
+
+
+// ============================================================================
+// КОНФИГУРАЦИЯ
+// ============================================================================
+
 json ConfigLoader::load_with_includes(const std::string& filename, 
                                       const std::filesystem::path& base_path) {
     VRL_LOG_DEBUG(modules::CONFIG, "Loading config with includes: " + filename);
     
-    // Проверка на циклические включения
     for (const auto& loaded : loaded_files_) {
         if (loaded == filename) {
             VRL_LOG_WARN(modules::CONFIG, "Circular include detected: " + filename);
@@ -23,13 +111,11 @@ json ConfigLoader::load_with_includes(const std::string& filename,
     }
     loaded_files_.push_back(filename);
     
-    // Определяем полный путь
     std::filesystem::path file_path = filename;
     if (!file_path.is_absolute()) {
         file_path = base_path / file_path;
     }
     
-    // Нормализуем путь
     try {
         file_path = std::filesystem::weakly_canonical(file_path);
     } catch (const std::exception& e) {
@@ -53,23 +139,18 @@ json ConfigLoader::load_with_includes(const std::string& filename,
         return json::object();
     }
     
-    // Проверяем, что результат - объект
     if (!result.is_object()) {
         VRL_LOG_ERROR(modules::CONFIG, "JSON root is not an object");
         return json::object();
     }
     
-    // Начинаем с пустого объекта для сбора данных
     json merged_result = json::object();
     
-    // Обработка include директив
     if (result.contains("_includes") && result["_includes"].is_array()) {
         for (const auto& include_file : result["_includes"]) {
             if (!include_file.is_string()) continue;
             
             std::string include_path = include_file.get<std::string>();
-            
-            // Путь относительно текущего файла
             std::filesystem::path include_full_path = file_path.parent_path() / include_path;
             try {
                 include_full_path = std::filesystem::weakly_canonical(include_full_path);
@@ -83,7 +164,6 @@ json ConfigLoader::load_with_includes(const std::string& filename,
             json included = load_with_includes(include_full_path.string(), 
                                                file_path.parent_path());
             
-            // Проверяем, что включенный файл - объект и не пустой
             if (!included.is_object()) {
                 VRL_LOG_WARN(modules::CONFIG, "Included file is not an object: " + include_full_path.string());
                 continue;
@@ -94,14 +174,11 @@ json ConfigLoader::load_with_includes(const std::string& filename,
                 continue;
             }
             
-            // Рекурсивное слияние
             merged_result = merge_json(merged_result, included);
         }
     }
     
-    // Если нет include, но есть данные в самом файле - используем их
     if (merged_result.empty() && !result.empty()) {
-        // Проверяем, есть ли в файле полезные данные (не только мета-поля)
         bool has_data = false;
         for (auto& [key, _] : result.items()) {
             if (key != "_includes" && key != "_comment" && key != "$schema") {
@@ -111,14 +188,12 @@ json ConfigLoader::load_with_includes(const std::string& filename,
         }
         if (has_data) {
             merged_result = result;
-            // Удаляем мета-поля
             if (merged_result.contains("_includes")) merged_result.erase("_includes");
             if (merged_result.contains("_comment")) merged_result.erase("_comment");
             if (merged_result.contains("$schema")) merged_result.erase("$schema");
         }
     }
     
-    // Удаляем мета-поля из результата (на всякий случай)
     if (merged_result.contains("_includes")) merged_result.erase("_includes");
     if (merged_result.contains("_comment")) merged_result.erase("_comment");
     if (merged_result.contains("$schema")) merged_result.erase("$schema");
@@ -130,7 +205,6 @@ json ConfigLoader::load_with_includes(const std::string& filename,
 }
 
 json ConfigLoader::merge_json(const json& base, const json& overlay) {
-    // Если overlay пустой или не объект, возвращаем base
     if (!overlay.is_object()) {
         return base;
     }
@@ -150,7 +224,6 @@ json ConfigLoader::merge_json(const json& base, const json& overlay) {
     json result = base;
     
     for (auto& [key, value] : overlay.items()) {
-        // Пропускаем мета-поля
         if (key == "_includes" || key == "_comment" || key == "$schema") {
             continue;
         }
@@ -174,7 +247,6 @@ bool ConfigLoader::load(const std::string& filename, SystemConfig& config) {
     
     loaded_files_.clear();
     
-    // Определяем базовый путь (директория файла)
     std::filesystem::path file_path = filename;
     std::filesystem::path base_path = file_path.parent_path();
     if (base_path.empty()) {
@@ -188,7 +260,6 @@ bool ConfigLoader::load(const std::string& filename, SystemConfig& config) {
         return false;
     }
     
-    // Выводим содержимое для отладки
     VRL_LOG_DEBUG(modules::CONFIG, "Merged config has keys: " + 
                   std::to_string(merged.size()));
     for (auto& [key, _] : merged.items()) {
@@ -246,45 +317,55 @@ bool ConfigLoader::save(const SystemConfig& config, const std::string& filename)
 }
 
 // ============================================================================
-// parse_target - БЕЗ ИЗМЕНЕНИЙ
+// PARSE TARGET
 // ============================================================================
 
 bool ConfigLoader::parse_target(const json& j, GeneratedTarget& target, bool is_rbs) {
     try {
-        if (j.contains("name")) target.name = j["name"].get<std::string>();
-        if (j.contains("azimuth_deg")) target.azimuth_deg = j["azimuth_deg"].get<double>();
-        if (j.contains("range_km")) target.range_km = j["range_km"].get<double>();
-        if (j.contains("rbs_code_octal") && is_rbs) {
-            target.rbs_code_octal = j["rbs_code_octal"].get<uint16_t>();
+        // Проверяем обязательные поля
+        if (!j.contains("name") || !j["name"].is_string()) {
+            VRL_LOG_ERROR(modules::CONFIG, "Target missing 'name' field");
+            return false;
         }
-        if (j.contains("uvd_data_dec") && !is_rbs) {
-            target.uvd_data_dec = j["uvd_data_dec"].get<uint32_t>();
+        target.name = j["name"].get<std::string>();
+        
+        // Поля с валидацией
+        safe_get_value(j, "azimuth_deg", target.azimuth_deg, is_angle, "must be 0-360");
+        safe_get_value(j, "range_km", target.range_km, is_positive, "must be > 0");
+        
+        if (is_rbs) {
+            if (!safe_get_value(j, "rbs_code_octal", target.rbs_code_octal, 
+                               is_positive_uint16, "must be > 0")) {
+                VRL_LOG_WARN(modules::CONFIG, "RBS target " + target.name + 
+                             " missing or invalid rbs_code_octal");
+            }
+        } else {
+            if (!safe_get_value(j, "uvd_data_dec", target.uvd_data_dec,
+                               is_positive_uint32, "must be > 0")) {
+                VRL_LOG_WARN(modules::CONFIG, "UVD target " + target.name + 
+                             " missing or invalid uvd_data_dec");
+            }
         }
-        if (j.contains("azimuth_speed_deg_per_rev")) {
-            target.azimuth_speed_deg_per_rev = j["azimuth_speed_deg_per_rev"].get<double>();
-        }
-        if (j.contains("range_speed_km_per_rev")) {
-            target.range_speed_km_per_rev = j["range_speed_km_per_rev"].get<double>();
-        }
-        if (j.contains("spi")) target.spi = j["spi"].get<bool>();
-        if (j.contains("enabled")) target.enabled = j["enabled"].get<bool>();
-        if (j.contains("update_every_n_revolutions")) {
-            target.update_every_n_revolutions = j["update_every_n_revolutions"].get<int>();
-        }
-        if (j.contains("revolution_offset")) target.revolution_offset = j["revolution_offset"].get<int>();
-        if (j.contains("altitude_meters")) target.altitude_meters = j["altitude_meters"].get<int>();
-        if (j.contains("enable_altitude")) target.enable_altitude = j["enable_altitude"].get<bool>();
-        if (j.contains("alternate_code_altitude")) {
-            target.alternate_code_altitude = j["alternate_code_altitude"].get<bool>();
-        }
-        if (j.contains("alternate_data_altitude")) {
-            target.alternate_data_altitude = j["alternate_data_altitude"].get<bool>();
-        }
-        if (j.contains("use_linear_motion")) target.use_linear_motion = j["use_linear_motion"].get<bool>();
-        if (j.contains("speed_m_per_s")) target.speed_m_per_s = j["speed_m_per_s"].get<double>();
-        if (j.contains("course_deg")) target.course_deg = j["course_deg"].get<double>();
-        if (j.contains("initial_x_km")) target.initial_x_km = j["initial_x_km"].get<double>();
-        if (j.contains("initial_y_km")) target.initial_y_km = j["initial_y_km"].get<double>();
+        
+        safe_get_value(j, "azimuth_speed_deg_per_rev", target.azimuth_speed_deg_per_rev);
+        safe_get_value(j, "range_speed_km_per_rev", target.range_speed_km_per_rev);
+        safe_get_value(j, "spi", target.spi);
+        safe_get_value(j, "enabled", target.enabled);
+        safe_get_value(j, "update_every_n_revolutions", target.update_every_n_revolutions,
+                      is_positive_int, "must be >= 1");
+        safe_get_value(j, "revolution_offset", target.revolution_offset,
+                      is_non_negative_int, "must be >= 0");
+        
+        safe_get_value(j, "altitude_meters", target.altitude_meters);
+        safe_get_value(j, "enable_altitude", target.enable_altitude);
+        safe_get_value(j, "alternate_code_altitude", target.alternate_code_altitude);
+        safe_get_value(j, "alternate_data_altitude", target.alternate_data_altitude);
+        safe_get_value(j, "use_linear_motion", target.use_linear_motion);
+        
+        safe_get_value(j, "speed_m_per_s", target.speed_m_per_s, is_non_negative, "must be >= 0");
+        safe_get_value(j, "course_deg", target.course_deg, is_angle, "must be 0-360");
+        safe_get_value(j, "initial_x_km", target.initial_x_km);
+        safe_get_value(j, "initial_y_km", target.initial_y_km);
         
         target.type = is_rbs ? GeneratedTarget::Type::RBS : GeneratedTarget::Type::UVD;
         return true;
@@ -295,9 +376,12 @@ bool ConfigLoader::parse_target(const json& j, GeneratedTarget& target, bool is_
 }
 
 
+// ============================================================================
+// PARSE CONFIG
+// ============================================================================
+
 bool ConfigLoader::parse_config(const json& j, SystemConfig& config) {
     try {
-        // Проверяем, что j - объект
         if (!j.is_object()) {
             VRL_LOG_ERROR(modules::CONFIG, "Config root is not an object");
             return false;
@@ -308,285 +392,213 @@ bool ConfigLoader::parse_config(const json& j, SystemConfig& config) {
             return false;
         }
         
-        // Radar
+        // ===== RADAR =====
         if (j.contains("radar") && j["radar"].is_object()) {
             const auto& r = j["radar"];
-            if (r.contains("range_bin_rbs") && r["range_bin_rbs"].is_number()) {
-                config.radar.range_bin_rbs = r["range_bin_rbs"].get<double>();
-            }
-            if (r.contains("range_bin_uvd") && r["range_bin_uvd"].is_number()) {
-                config.radar.range_bin_uvd = r["range_bin_uvd"].get<double>();
-            }
-            if (r.contains("max_azimuth_diff_for_overlap") && r["max_azimuth_diff_for_overlap"].is_number()) {
-                config.radar.max_azimuth_diff_for_overlap = r["max_azimuth_diff_for_overlap"].get<double>();
-            }
-            if (r.contains("max_range_diff_for_overlap") && r["max_range_diff_for_overlap"].is_number()) {
-                config.radar.max_range_diff_for_overlap = r["max_range_diff_for_overlap"].get<uint16_t>();
-            }
-            if (r.contains("min_amplitude") && r["min_amplitude"].is_number()) {
-                config.radar.min_amplitude = r["min_amplitude"].get<uint8_t>();
-            }
+            
+            safe_get_value(r, "range_bin_rbs", config.radar.range_bin_rbs,
+                          is_positive, "must be > 0");
+            safe_get_value(r, "range_bin_uvd", config.radar.range_bin_uvd,
+                          is_positive, "must be > 0");
+            safe_get_value(r, "max_azimuth_diff_for_overlap", 
+                          config.radar.max_azimuth_diff_for_overlap,
+                          is_non_negative, "must be >= 0");
+            safe_get_value(r, "max_range_diff_for_overlap", 
+                          config.radar.max_range_diff_for_overlap,
+                          is_positive_uint16, "must be > 0");
+            safe_get_value(r, "min_amplitude", config.radar.min_amplitude,
+                          is_positive_uint8, "must be > 0");
         }
         
-        // RBS Simulator
+        // ===== RBS SIMULATOR =====
         if (j.contains("rbs") && j["rbs"].is_object()) {
             const auto& r = j["rbs"];
-            if (r.contains("snr_db") && r["snr_db"].is_number()) {
-                config.simulator.rbs.snr_db = r["snr_db"].get<double>();
-            }
-            if (r.contains("amp_variation") && r["amp_variation"].is_number()) {
-                config.simulator.rbs.amp_variation = r["amp_variation"].get<double>();
-            }
-            if (r.contains("f1f2_amp_ratio") && r["f1f2_amp_ratio"].is_number()) {
-                config.simulator.rbs.f1f2_amp_ratio = r["f1f2_amp_ratio"].get<double>();
-            }
+            safe_get_value(r, "snr_db", config.simulator.rbs.snr_db, is_snr, "must be -10 to 60");
+            safe_get_value(r, "amp_variation", config.simulator.rbs.amp_variation,
+                          is_non_negative, "must be >= 0");
+            safe_get_value(r, "f1f2_amp_ratio", config.simulator.rbs.f1f2_amp_ratio,
+                          is_positive, "must be > 0");
         }
         
-        // UVD Simulator
+        // ===== UVD SIMULATOR =====
         if (j.contains("uvd") && j["uvd"].is_object()) {
             const auto& u = j["uvd"];
-            if (u.contains("snr_db") && u["snr_db"].is_number()) {
-                config.simulator.uvd.snr_db = u["snr_db"].get<double>();
-            }
-            if (u.contains("error_probability") && u["error_probability"].is_number()) {
-                config.simulator.uvd.error_probability = u["error_probability"].get<double>();
-            }
+            safe_get_value(u, "snr_db", config.simulator.uvd.snr_db, is_snr, "must be -10 to 60");
+            safe_get_value(u, "error_probability", config.simulator.uvd.error_probability,
+                          is_percentage, "must be 0-1");
         }
         
-        // SLS
+        // ===== SLS =====
         if (j.contains("sls") && j["sls"].is_object()) {
             const auto& s = j["sls"];
-            if (s.contains("enabled") && s["enabled"].is_boolean()) {
-                config.simulator.sls.enabled = s["enabled"].get<bool>();
-            }
-            if (s.contains("main_to_sls_ratio") && s["main_to_sls_ratio"].is_number()) {
-                config.simulator.sls.main_to_sls_ratio = s["main_to_sls_ratio"].get<double>();
-            }
-            if (s.contains("sls_attenuation_db") && s["sls_attenuation_db"].is_number()) {
-                config.simulator.sls.sls_attenuation_db = s["sls_attenuation_db"].get<double>();
-            }
-            if (s.contains("sidelobe_probability") && s["sidelobe_probability"].is_number()) {
-                config.simulator.sls.sidelobe_probability = s["sidelobe_probability"].get<double>();
-            }
+            safe_get_value(s, "enabled", config.simulator.sls.enabled);
+            safe_get_value(s, "main_to_sls_ratio", config.simulator.sls.main_to_sls_ratio,
+                          is_positive, "must be > 0");
+            safe_get_value(s, "sls_attenuation_db", config.simulator.sls.sls_attenuation_db,
+                          is_non_negative, "must be >= 0");
+            safe_get_value(s, "sidelobe_probability", config.simulator.sls.sidelobe_probability,
+                          is_percentage, "must be 0-1");
         }
         
-        // Tracker
+        // ===== TRACKER =====
         if (j.contains("tracker") && j["tracker"].is_object()) {
             const auto& t = j["tracker"];
-            if (t.contains("min_hits_to_confirm") && t["min_hits_to_confirm"].is_number()) {
-                config.tracker.min_hits_to_confirm = t["min_hits_to_confirm"].get<int>();
-            }
-            if (t.contains("max_coast_count") && t["max_coast_count"].is_number()) {
-                config.tracker.max_coast_count = t["max_coast_count"].get<int>();
-            }
-            if (t.contains("max_gate_distance") && t["max_gate_distance"].is_number()) {
-                config.tracker.max_gate_distance = t["max_gate_distance"].get<double>();
-            }
-            if (t.contains("max_gate_azimuth") && t["max_gate_azimuth"].is_number()) {
-                config.tracker.max_gate_azimuth = t["max_gate_azimuth"].get<double>();
-            }
-            if (t.contains("process_noise") && t["process_noise"].is_number()) {
-                config.tracker.process_noise = t["process_noise"].get<double>();
-            }
-            if (t.contains("measurement_noise") && t["measurement_noise"].is_number()) {
-                config.tracker.measurement_noise = t["measurement_noise"].get<double>();
-            }
-            if (t.contains("enable_uvd_tracking") && t["enable_uvd_tracking"].is_boolean()) {
-                config.tracker.enable_uvd_tracking = t["enable_uvd_tracking"].get<bool>();
-            }
-            if (t.contains("enable_rbs_tracking") && t["enable_rbs_tracking"].is_boolean()) {
-                config.tracker.enable_rbs_tracking = t["enable_rbs_tracking"].get<bool>();
-            }
-            if (t.contains("debug_mode") && t["debug_mode"].is_boolean()) {
-                config.tracker.debug_mode = t["debug_mode"].get<bool>();
-            }
+            safe_get_value(t, "min_hits_to_confirm", config.tracker.min_hits_to_confirm,
+                          is_positive_int, "must be >= 1");
+            safe_get_value(t, "max_coast_count", config.tracker.max_coast_count,
+                          is_positive_int, "must be >= 1");
+            safe_get_value(t, "max_gate_distance", config.tracker.max_gate_distance,
+                          is_positive, "must be > 0");
+            safe_get_value(t, "max_gate_azimuth", config.tracker.max_gate_azimuth,
+                          is_positive, "must be > 0");
+            safe_get_value(t, "process_noise", config.tracker.process_noise,
+                          is_non_negative, "must be >= 0");
+            safe_get_value(t, "measurement_noise", config.tracker.measurement_noise,
+                          is_non_negative, "must be >= 0");
+            safe_get_value(t, "enable_uvd_tracking", config.tracker.enable_uvd_tracking);
+            safe_get_value(t, "enable_rbs_tracking", config.tracker.enable_rbs_tracking);
+            safe_get_value(t, "debug_mode", config.tracker.debug_mode);
         }
         
-        // Processing
+        // ===== PROCESSING =====
         if (j.contains("processing") && j["processing"].is_object()) {
             const auto& p = j["processing"];
-            if (p.contains("max_gap_azimuth") && p["max_gap_azimuth"].is_number()) {
-                config.processing.max_gap_azimuth = p["max_gap_azimuth"].get<int>();
-            }
-            if (p.contains("range_window") && p["range_window"].is_number()) {
-                config.processing.range_window = p["range_window"].get<int>();
-            }
-            if (p.contains("range_tolerance") && p["range_tolerance"].is_number()) {
-                config.processing.range_tolerance = p["range_tolerance"].get<uint16_t>();
-            }
-            if (p.contains("min_hits") && p["min_hits"].is_number()) {
-                config.processing.min_hits = p["min_hits"].get<int>();
-            }
-            if (p.contains("output_file") && p["output_file"].is_string()) {
-                config.processing.output_file = p["output_file"].get<std::string>();
-            }
-            if (p.contains("plots_output_file") && p["plots_output_file"].is_string()) {
-                config.processing.plots_output_file = p["plots_output_file"].get<std::string>();
-            }
-            if (p.contains("min_cluster_hits") && p["min_cluster_hits"].is_number()) {
-                config.processing.min_cluster_hits = p["min_cluster_hits"].get<int>();
-            }
-            if (p.contains("range_threshold_bins") && p["range_threshold_bins"].is_number()) {
-                config.processing.range_threshold_bins = p["range_threshold_bins"].get<int>();
-            }
-            if (p.contains("azimuth_threshold_bins") && p["azimuth_threshold_bins"].is_number()) {
-                config.processing.azimuth_threshold_bins = p["azimuth_threshold_bins"].get<int>();
-            }
-            if (p.contains("completion_gap_bins") && p["completion_gap_bins"].is_number()) {
-                config.processing.completion_gap_bins = p["completion_gap_bins"].get<int>();
-            }
-            if (p.contains("min_confidence") && p["min_confidence"].is_number()) {
-                config.processing.min_confidence = p["min_confidence"].get<double>();
-            }
-            if (p.contains("garbled_confidence_threshold") && p["garbled_confidence_threshold"].is_number()) {
-                config.processing.garbled_confidence_threshold = p["garbled_confidence_threshold"].get<double>();
-            }
-            if (p.contains("min_uvd_confidence") && p["min_uvd_confidence"].is_number()) {
-                config.processing.min_uvd_confidence = p["min_uvd_confidence"].get<double>();
-            }
-            if (p.contains("uvd_garbled_threshold") && p["uvd_garbled_threshold"].is_number()) {
-                config.processing.uvd_garbled_threshold = p["uvd_garbled_threshold"].get<double>();
-            }
+            safe_get_value(p, "max_gap_azimuth", config.processing.max_gap_azimuth,
+                          is_positive_int, "must be >= 1");
+            safe_get_value(p, "range_window", config.processing.range_window,
+                          is_positive_int, "must be >= 1");
+            safe_get_value(p, "range_tolerance", config.processing.range_tolerance,
+                          is_positive_uint16, "must be >= 1");
+            safe_get_value(p, "min_hits", config.processing.min_hits,
+                          is_positive_int, "must be >= 1");
+            safe_get_value(p, "output_file", config.processing.output_file);
+            safe_get_value(p, "plots_output_file", config.processing.plots_output_file);
+            safe_get_value(p, "min_cluster_hits", config.processing.min_cluster_hits,
+                          is_positive_int, "must be >= 1");
+            safe_get_value(p, "range_threshold_bins", config.processing.range_threshold_bins,
+                          is_positive_int, "must be >= 1");
+            safe_get_value(p, "azimuth_threshold_bins", config.processing.azimuth_threshold_bins,
+                          is_positive_int, "must be >= 1");
+            safe_get_value(p, "completion_gap_bins", config.processing.completion_gap_bins,
+                          is_positive_int, "must be >= 1");
+            safe_get_value(p, "min_confidence", config.processing.min_confidence,
+                          is_percentage, "must be 0-1");
+            safe_get_value(p, "garbled_confidence_threshold", config.processing.garbled_confidence_threshold,
+                          is_percentage, "must be 0-1");
+            safe_get_value(p, "min_uvd_confidence", config.processing.min_uvd_confidence,
+                          is_percentage, "must be 0-1");
+            safe_get_value(p, "uvd_garbled_threshold", config.processing.uvd_garbled_threshold,
+                          is_percentage, "must be 0-1");
         }
         
-        // Confidence
+        // ===== CONFIDENCE =====
         if (j.contains("confidence") && j["confidence"].is_object()) {
             const auto& c = j["confidence"];
-            if (c.contains("initial_track_confidence") && c["initial_track_confidence"].is_number()) {
-                config.confidence.initial_track_confidence = c["initial_track_confidence"].get<double>();
-            }
-            if (c.contains("coast_confidence_decay") && c["coast_confidence_decay"].is_number()) {
-                config.confidence.coast_confidence_decay = c["coast_confidence_decay"].get<double>();
-            }
-            if (c.contains("min_track_confidence") && c["min_track_confidence"].is_number()) {
-                config.confidence.min_track_confidence = c["min_track_confidence"].get<double>();
-            }
-            if (c.contains("max_track_confidence") && c["max_track_confidence"].is_number()) {
-                config.confidence.max_track_confidence = c["max_track_confidence"].get<double>();
-            }
-            if (c.contains("confidence_rbs_weight_framing") && c["confidence_rbs_weight_framing"].is_number()) {
-                config.confidence.confidence_rbs_weight_framing = c["confidence_rbs_weight_framing"].get<double>();
-            }
-            if (c.contains("confidence_rbs_weight_snr") && c["confidence_rbs_weight_snr"].is_number()) {
-                config.confidence.confidence_rbs_weight_snr = c["confidence_rbs_weight_snr"].get<double>();
-            }
-            if (c.contains("confidence_rbs_weight_stability") && c["confidence_rbs_weight_stability"].is_number()) {
-                config.confidence.confidence_rbs_weight_stability = c["confidence_rbs_weight_stability"].get<double>();
-            }
-            if (c.contains("confidence_rbs_weight_errors") && c["confidence_rbs_weight_errors"].is_number()) {
-                config.confidence.confidence_rbs_weight_errors = c["confidence_rbs_weight_errors"].get<double>();
-            }
-            if (c.contains("confidence_uvd_weight_snr") && c["confidence_uvd_weight_snr"].is_number()) {
-                config.confidence.confidence_uvd_weight_snr = c["confidence_uvd_weight_snr"].get<double>();
-            }
-            if (c.contains("confidence_uvd_weight_errors") && c["confidence_uvd_weight_errors"].is_number()) {
-                config.confidence.confidence_uvd_weight_errors = c["confidence_uvd_weight_errors"].get<double>();
-            }
-            if (c.contains("confidence_uvd_weight_stability") && c["confidence_uvd_weight_stability"].is_number()) {
-                config.confidence.confidence_uvd_weight_stability = c["confidence_uvd_weight_stability"].get<double>();
-            }
+            safe_get_value(c, "initial_track_confidence", config.confidence.initial_track_confidence,
+                          is_percentage, "must be 0-1");
+            safe_get_value(c, "coast_confidence_decay", config.confidence.coast_confidence_decay,
+                          is_non_negative, "must be >= 0");
+            safe_get_value(c, "min_track_confidence", config.confidence.min_track_confidence,
+                          is_percentage, "must be 0-1");
+            safe_get_value(c, "max_track_confidence", config.confidence.max_track_confidence,
+                          is_percentage, "must be 0-1");
+            safe_get_value(c, "confidence_rbs_weight_framing", config.confidence.confidence_rbs_weight_framing,
+                          is_percentage, "must be 0-1");
+            safe_get_value(c, "confidence_rbs_weight_snr", config.confidence.confidence_rbs_weight_snr,
+                          is_percentage, "must be 0-1");
+            safe_get_value(c, "confidence_rbs_weight_stability", config.confidence.confidence_rbs_weight_stability,
+                          is_percentage, "must be 0-1");
+            safe_get_value(c, "confidence_rbs_weight_errors", config.confidence.confidence_rbs_weight_errors,
+                          is_percentage, "must be 0-1");
+            safe_get_value(c, "confidence_uvd_weight_snr", config.confidence.confidence_uvd_weight_snr,
+                          is_percentage, "must be 0-1");
+            safe_get_value(c, "confidence_uvd_weight_errors", config.confidence.confidence_uvd_weight_errors,
+                          is_percentage, "must be 0-1");
+            safe_get_value(c, "confidence_uvd_weight_stability", config.confidence.confidence_uvd_weight_stability,
+                          is_percentage, "must be 0-1");
         }
         
-        // Simulator Constants
+        // ===== SIMULATOR CONSTANTS =====
         if (j.contains("simulator_constants") && j["simulator_constants"].is_object()) {
             const auto& s = j["simulator_constants"];
-            if (s.contains("base_signal_power") && s["base_signal_power"].is_number()) {
-                config.simulator_constants.base_signal_power = s["base_signal_power"].get<double>();
-            }
-            if (s.contains("amp_variation_min") && s["amp_variation_min"].is_number()) {
-                config.simulator_constants.amp_variation_min = s["amp_variation_min"].get<double>();
-            }
-            if (s.contains("amp_variation_max") && s["amp_variation_max"].is_number()) {
-                config.simulator_constants.amp_variation_max = s["amp_variation_max"].get<double>();
-            }
-            if (s.contains("uvd_error_threshold") && s["uvd_error_threshold"].is_number()) {
-                config.simulator_constants.uvd_error_threshold = s["uvd_error_threshold"].get<double>();
-            }
-            if (s.contains("max_snr_db") && s["max_snr_db"].is_number()) {
-                config.simulator_constants.max_snr_db = s["max_snr_db"].get<double>();
-            }
-            if (s.contains("min_speed_ms") && s["min_speed_ms"].is_number()) {
-                config.simulator_constants.min_speed_ms = s["min_speed_ms"].get<double>();
-            }
-            if (s.contains("min_time_delta") && s["min_time_delta"].is_number()) {
-                config.simulator_constants.min_time_delta = s["min_time_delta"].get<double>();
-            }
-            if (s.contains("max_mode_c_code") && s["max_mode_c_code"].is_number()) {
-                config.simulator_constants.max_mode_c_code = s["max_mode_c_code"].get<int>();
-            }
-            if (s.contains("max_mode_c_attempts") && s["max_mode_c_attempts"].is_number()) {
-                config.simulator_constants.max_mode_c_attempts = s["max_mode_c_attempts"].get<int>();
-            }
-            if (s.contains("display_beamwidth_deg") && s["display_beamwidth_deg"].is_number()) {
-                config.simulator_constants.display_beamwidth_deg = s["display_beamwidth_deg"].get<double>();
-            }
-            if (s.contains("min_amplitude_ratio_for_separation") && s["min_amplitude_ratio_for_separation"].is_number()) {
-                config.simulator_constants.min_amplitude_ratio_for_separation = s["min_amplitude_ratio_for_separation"].get<double>();
-            }
+            safe_get_value(s, "base_signal_power", config.simulator_constants.base_signal_power,
+                          is_positive, "must be > 0");
+            safe_get_value(s, "amp_variation_min", config.simulator_constants.amp_variation_min,
+                          is_positive, "must be > 0");
+            safe_get_value(s, "amp_variation_max", config.simulator_constants.amp_variation_max,
+                          is_positive, "must be > 0");
+            safe_get_value(s, "uvd_error_threshold", config.simulator_constants.uvd_error_threshold,
+                          is_positive, "must be > 0");
+            safe_get_value(s, "max_snr_db", config.simulator_constants.max_snr_db,
+                          is_positive, "must be > 0");
+            safe_get_value(s, "min_speed_ms", config.simulator_constants.min_speed_ms,
+                          is_non_negative, "must be >= 0");
+            safe_get_value(s, "min_time_delta", config.simulator_constants.min_time_delta,
+                          is_positive, "must be > 0");
+            safe_get_value(s, "max_mode_c_code", config.simulator_constants.max_mode_c_code,
+                          is_positive_int, "must be > 0");
+            safe_get_value(s, "max_mode_c_attempts", config.simulator_constants.max_mode_c_attempts,
+                          is_positive_int, "must be > 0");
+            safe_get_value(s, "display_beamwidth_deg", config.simulator_constants.display_beamwidth_deg,
+                          is_positive, "must be > 0");
+            safe_get_value(s, "min_amplitude_ratio_for_separation", 
+                          config.simulator_constants.min_amplitude_ratio_for_separation,
+                          is_percentage, "must be 0-1");
         }
         
-        // Azimuth
+        // ===== AZIMUTH =====
         if (j.contains("azimuth") && j["azimuth"].is_object()) {
             const auto& a = j["azimuth"];
-            if (a.contains("azimuth_bins") && a["azimuth_bins"].is_number()) {
-                config.azimuth.azimuth_bins = a["azimuth_bins"].get<int>();
+            int bins;
+            if (safe_get_value(a, "azimuth_bins", bins, is_positive_int, "must be > 0")) {
+                config.azimuth.azimuth_bins = bins;
                 config.azimuth.azimuth_half = config.azimuth.azimuth_bins / 2;
                 config.azimuth.azimuth_per_bin_deg = 360.0 / config.azimuth.azimuth_bins;
                 config.azimuth.azimuth_per_bin_rad = M_PI / (config.azimuth.azimuth_bins / 2);
             }
         }
         
-        // Общие параметры
-        if (j.contains("beamwidth_deg") && j["beamwidth_deg"].is_number()) {
-            config.beamwidth_deg = j["beamwidth_deg"].get<double>();
-        }
-        if (j.contains("revolution_time") && j["revolution_time"].is_number()) {
-            config.revolution_time = j["revolution_time"].get<double>();
-        }
+        // ===== ОБЩИЕ ПАРАМЕТРЫ =====
+        safe_get_value(j, "beamwidth_deg", config.beamwidth_deg, is_positive, "must be > 0");
+        safe_get_value(j, "revolution_time", config.revolution_time, is_positive, "must be > 0");
         
-        // RBS Targets
-        if (j.contains("rbs_targets") && j["rbs_targets"].is_array()) {
-            for (const auto& target_json : j["rbs_targets"]) {
-                GeneratedTarget target;
-                if (parse_target(target_json, target, true)) {
-                    config.rbs_targets.push_back(target);
-                }
-            }
-        }
-        
-        // UVD Targets
-        if (j.contains("uvd_targets") && j["uvd_targets"].is_array()) {
-            for (const auto& target_json : j["uvd_targets"]) {
-                GeneratedTarget target;
-                if (parse_target(target_json, target, false)) {
-                    config.uvd_targets.push_back(target);
-                }
-            }
-        }
-
-        // ===== НОВАЯ СЕКЦИЯ: LOGGING =====
+        // ===== LOGGING =====
         if (j.contains("logging") && j["logging"].is_object()) {
             const auto& l = j["logging"];
+            safe_get_value(l, "console_enabled", config.logging.console_enabled);
+            safe_get_value(l, "file_enabled", config.logging.file_enabled);
+            safe_get_value(l, "log_file", config.logging.log_file);
+            safe_get_value(l, "timestamp_format", config.logging.timestamp_format);
             
-            if (l.contains("console_enabled") && l["console_enabled"].is_boolean()) {
-                config.logging.console_enabled = l["console_enabled"].get<bool>();
-            }
-            if (l.contains("file_enabled") && l["file_enabled"].is_boolean()) {
-                config.logging.file_enabled = l["file_enabled"].get<bool>();
-            }
-            if (l.contains("log_file") && l["log_file"].is_string()) {
-                config.logging.log_file = l["log_file"].get<std::string>();
-            }
-            if (l.contains("timestamp_format") && l["timestamp_format"].is_string()) {
-                config.logging.timestamp_format = l["timestamp_format"].get<std::string>();
-            }
-            
-            // Загружаем уровни для модулей
             if (l.contains("modules") && l["modules"].is_object()) {
                 for (auto& [module, level] : l["modules"].items()) {
                     if (level.is_string()) {
                         config.logging.set_module_level(module, level.get<std::string>());
                     }
+                }
+            }
+        }
+        
+        // ===== RBS TARGETS =====
+        if (j.contains("rbs_targets") && j["rbs_targets"].is_array()) {
+            for (const auto& target_json : j["rbs_targets"]) {
+                GeneratedTarget target;
+                if (parse_target(target_json, target, true)) {
+                    config.rbs_targets.push_back(target);
+                } else {
+                    VRL_LOG_WARN(modules::CONFIG, "Skipping invalid RBS target");
+                }
+            }
+        }
+        
+        // ===== UVD TARGETS =====
+        if (j.contains("uvd_targets") && j["uvd_targets"].is_array()) {
+            for (const auto& target_json : j["uvd_targets"]) {
+                GeneratedTarget target;
+                if (parse_target(target_json, target, false)) {
+                    config.uvd_targets.push_back(target);
+                } else {
+                    VRL_LOG_WARN(modules::CONFIG, "Skipping invalid UVD target");
                 }
             }
         }
@@ -598,16 +610,20 @@ bool ConfigLoader::parse_config(const json& j, SystemConfig& config) {
     }
 }
 
+
+
 // ============================================================================
-// validate - БЕЗ ИЗМЕНЕНИЙ
+// VALIDATE - РАСШИРЕННАЯ ВАЛИДАЦИЯ
 // ============================================================================
 
 bool ConfigLoader::validate(const SystemConfig& config, std::string& error) const {
+    // Проверка наличия целей
     if (!config.has_targets()) {
         error = "No targets defined in configuration";
         return false;
     }
     
+    // Проверка параметров радара
     if (config.radar.range_bin_rbs <= 0) {
         error = "range_bin_rbs must be > 0";
         return false;
@@ -623,6 +639,12 @@ bool ConfigLoader::validate(const SystemConfig& config, std::string& error) cons
         return false;
     }
     
+    if (config.revolution_time <= 0) {
+        error = "revolution_time must be > 0";
+        return false;
+    }
+    
+    // Проверка дубликатов RBS кодов
     std::set<uint16_t> rbs_codes;
     for (const auto& target : config.rbs_targets) {
         if (!target.enabled) continue;
@@ -634,6 +656,7 @@ bool ConfigLoader::validate(const SystemConfig& config, std::string& error) cons
         rbs_codes.insert(target.rbs_code_octal);
     }
     
+    // Проверка дубликатов UVD данных
     std::set<uint32_t> uvd_data;
     for (const auto& target : config.uvd_targets) {
         if (!target.enabled) continue;
@@ -645,6 +668,7 @@ bool ConfigLoader::validate(const SystemConfig& config, std::string& error) cons
         uvd_data.insert(target.uvd_data_dec);
     }
     
+    // Проверка параметров трекера
     if (config.tracker.min_hits_to_confirm < 1) {
         error = "min_hits_to_confirm must be >= 1";
         return false;
@@ -660,17 +684,98 @@ bool ConfigLoader::validate(const SystemConfig& config, std::string& error) cons
         return false;
     }
     
+    if (config.tracker.max_gate_azimuth <= 0) {
+        error = "max_gate_azimuth must be > 0";
+        return false;
+    }
+    
+    if (config.tracker.process_noise < 0) {
+        error = "process_noise must be >= 0";
+        return false;
+    }
+    
+    if (config.tracker.measurement_noise < 0) {
+        error = "measurement_noise must be >= 0";
+        return false;
+    }
+    
+    // Проверка параметров обработки
+    if (config.processing.max_gap_azimuth < 1) {
+        error = "max_gap_azimuth must be >= 1";
+        return false;
+    }
+    
+    if (config.processing.range_window < 1) {
+        error = "range_window must be >= 1";
+        return false;
+    }
+    
+    if (config.processing.min_hits < 1) {
+        error = "min_hits must be >= 1";
+        return false;
+    }
+    
+    // Проверка весов уверенности
+    double sum_rbs = config.confidence.confidence_rbs_weight_framing +
+                     config.confidence.confidence_rbs_weight_snr +
+                     config.confidence.confidence_rbs_weight_stability +
+                     config.confidence.confidence_rbs_weight_errors;
+    
+    if (std::abs(sum_rbs - 1.0) > 0.01) {
+        error = "RBS confidence weights must sum to 1.0 (current: " + 
+                std::to_string(sum_rbs) + ")";
+        return false;
+    }
+    
+    double sum_uvd = config.confidence.confidence_uvd_weight_snr +
+                     config.confidence.confidence_uvd_weight_errors +
+                     config.confidence.confidence_uvd_weight_stability;
+    
+    if (std::abs(sum_uvd - 1.0) > 0.01) {
+        error = "UVD confidence weights must sum to 1.0 (current: " + 
+                std::to_string(sum_uvd) + ")";
+        return false;
+    }
+    
+    // Проверка порогов уверенности
+    if (config.processing.min_confidence < 0 || config.processing.min_confidence > 1) {
+        error = "min_confidence must be between 0 and 1";
+        return false;
+    }
+    
+    if (config.processing.garbled_confidence_threshold < 0 || 
+        config.processing.garbled_confidence_threshold > 1) {
+        error = "garbled_confidence_threshold must be between 0 and 1";
+        return false;
+    }
+    
+    // Проверка параметров симуляции
+    if (config.simulator.rbs.snr_db < -10 || config.simulator.rbs.snr_db > 60) {
+        error = "RBS SNR must be between -10 and 60 dB";
+        return false;
+    }
+    
+    if (config.simulator.uvd.snr_db < -10 || config.simulator.uvd.snr_db > 60) {
+        error = "UVD SNR must be between -10 and 60 dB";
+        return false;
+    }
+    
+    if (config.simulator.uvd.error_probability < 0 || 
+        config.simulator.uvd.error_probability > 1) {
+        error = "error_probability must be between 0 and 1";
+        return false;
+    }
+    
     return true;
 }
 
 // ============================================================================
-// to_json - ОБНОВЛЕН С НОВЫМИ ПОЛЯМИ
+// TO JSON
 // ============================================================================
 
 json ConfigLoader::to_json(const SystemConfig& config) {
     json j;
     
-    // Radar
     j["radar"] = {
         {"range_bin_rbs", config.radar.range_bin_rbs},
         {"range_bin_uvd", config.radar.range_bin_uvd},
@@ -679,20 +784,17 @@ json ConfigLoader::to_json(const SystemConfig& config) {
         {"min_amplitude", config.radar.min_amplitude}
     };
     
-    // RBS Simulator
     j["rbs"] = {
         {"snr_db", config.simulator.rbs.snr_db},
         {"amp_variation", config.simulator.rbs.amp_variation},
         {"f1f2_amp_ratio", config.simulator.rbs.f1f2_amp_ratio}
     };
     
-    // UVD Simulator
     j["uvd"] = {
         {"snr_db", config.simulator.uvd.snr_db},
         {"error_probability", config.simulator.uvd.error_probability}
     };
     
-    // SLS
     j["sls"] = {
         {"enabled", config.simulator.sls.enabled},
         {"main_to_sls_ratio", config.simulator.sls.main_to_sls_ratio},
@@ -700,7 +802,6 @@ json ConfigLoader::to_json(const SystemConfig& config) {
         {"sidelobe_probability", config.simulator.sls.sidelobe_probability}
     };
     
-    // Tracker
     j["tracker"] = {
         {"min_hits_to_confirm", config.tracker.min_hits_to_confirm},
         {"max_coast_count", config.tracker.max_coast_count},
@@ -713,7 +814,6 @@ json ConfigLoader::to_json(const SystemConfig& config) {
         {"debug_mode", config.tracker.debug_mode}
     };
     
-    // Processing
     j["processing"] = {
         {"max_gap_azimuth", config.processing.max_gap_azimuth},
         {"range_window", config.processing.range_window},
@@ -731,7 +831,6 @@ json ConfigLoader::to_json(const SystemConfig& config) {
         {"uvd_garbled_threshold", config.processing.uvd_garbled_threshold}
     };
     
-    // Confidence
     j["confidence"] = {
         {"initial_track_confidence", config.confidence.initial_track_confidence},
         {"coast_confidence_decay", config.confidence.coast_confidence_decay},
@@ -746,7 +845,6 @@ json ConfigLoader::to_json(const SystemConfig& config) {
         {"confidence_uvd_weight_stability", config.confidence.confidence_uvd_weight_stability}
     };
     
-    // Simulator Constants
     j["simulator_constants"] = {
         {"base_signal_power", config.simulator_constants.base_signal_power},
         {"amp_variation_min", config.simulator_constants.amp_variation_min},
@@ -761,14 +859,26 @@ json ConfigLoader::to_json(const SystemConfig& config) {
         {"min_amplitude_ratio_for_separation", config.simulator_constants.min_amplitude_ratio_for_separation}
     };
     
-    // Azimuth
     j["azimuth"] = {
         {"azimuth_bins", config.azimuth.azimuth_bins}
     };
     
-    // Общие параметры
     j["beamwidth_deg"] = config.beamwidth_deg;
     j["revolution_time"] = config.revolution_time;
+    
+    // Logging
+    json modules_json = json::object();
+    for (const auto& [module, level] : config.logging.module_levels) {
+        modules_json[module] = level;
+    }
+    
+    j["logging"] = {
+        {"console_enabled", config.logging.console_enabled},
+        {"file_enabled", config.logging.file_enabled},
+        {"log_file", config.logging.log_file},
+        {"timestamp_format", config.logging.timestamp_format},
+        {"modules", modules_json}
+    };
     
     // RBS Targets
     j["rbs_targets"] = json::array();
@@ -816,22 +926,7 @@ json ConfigLoader::to_json(const SystemConfig& config) {
         t["initial_y_km"] = target.initial_y_km;
         j["uvd_targets"].push_back(t);
     }
-
-    // Logging
-    json modules_json = json::object();
-    for (const auto& [module, level] : config.logging.module_levels) {
-        modules_json[module] = level;
-    }
     
-    j["logging"] = {
-        {"console_enabled", config.logging.console_enabled},
-        {"file_enabled", config.logging.file_enabled},
-        {"log_file", config.logging.log_file},
-        {"timestamp_format", config.logging.timestamp_format},
-        {"modules", modules_json}
-    };
-    
-
     return j;
 }
 
