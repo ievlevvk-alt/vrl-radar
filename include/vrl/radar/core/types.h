@@ -11,6 +11,7 @@ namespace radar {
 struct RadarConfig {
     double range_bin_rbs{30.0};        // метры на дискрет для RBS
     double range_bin_uvd{60.0};        // метры на дискрет для УВД
+    double beamwidth_deg{5.0};         // Ширина диаграммы направленности в градусах    
     
     static constexpr uint16_t azimuth_max = 4096;
     static constexpr double azimuth_per_bin = 360.0 / azimuth_max; // ≈ 0.08789°

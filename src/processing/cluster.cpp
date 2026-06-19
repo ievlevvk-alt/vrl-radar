@@ -1,4 +1,6 @@
 // src/processing/cluster.cpp
+// Полный исправленный файл
+
 #include "vrl/radar/processing/cluster.h"
 #include "vrl/radar/utils/utils.h"
 #include "vrl/radar/utils/logger.h"
@@ -197,7 +199,14 @@ std::unique_ptr<IClusterer> ClusterTracker::create_clusterer(ClustererType type)
     switch (type) {
         case ClustererType::DBSCAN:
             VRL_LOG_DEBUG(modules::CLUSTER, "Creating DBSCANClusterer");
-            return std::make_unique<DBSCANClusterer>(150.0, 1.0, 3, 30.0);
+            // ИСПРАВЛЕНО: передаем правильные параметры
+            // RadarConfig{}, 3, 2, 1.2
+            return std::make_unique<DBSCANClusterer>(
+                RadarConfig{},  // Конфигурация по умолчанию
+                3,              // max_range_gap
+                2,              // min_points
+                1.2             // azimuth_gap_coefficient
+            );
         case ClustererType::LEGACY:
         default:
             VRL_LOG_DEBUG(modules::CLUSTER, "Creating LegacyClusterer");
