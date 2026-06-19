@@ -5,7 +5,7 @@
 #include "replies.h"
 #include <string>
 #include <vector>
-#include <map>
+#include <map>          // <-- ДОБАВЛЕНО
 #include <optional>
 #include <fstream>
 #include <sstream>
@@ -121,9 +121,11 @@ struct SystemConfig {
         uint16_t range_tolerance{5};
         int min_hits{2};
         std::string output_file{"targets.txt"};
+        std::string plots_output_file{""};  // <-- ДОБАВЛЕНО
     } processing;
     
     double beamwidth_deg{5.0};
+    double revolution_time{5.0};
     std::vector<GeneratedTarget> rbs_targets;
     std::vector<GeneratedTarget> uvd_targets;
     
@@ -133,7 +135,7 @@ struct SystemConfig {
 };
 
 // ============================================================================
-// CONFIG PARSER
+// CONFIG PARSER (СТАРЫЙ, ОСТАВЛЕН ДЛЯ СОВМЕСТИМОСТИ)
 // ============================================================================
 
 class ConfigParser {
@@ -154,7 +156,6 @@ public:
         return val.value_or(default_value);
     }
     
-    // Делаем get_string публичным
     std::optional<std::string> get_string(const std::string& key, 
                                           const std::string& section = "") const;
     

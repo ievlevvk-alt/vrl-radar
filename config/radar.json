@@ -5,7 +5,8 @@
         "min_hits": 2,
         "output_file": "targets.txt",
         "range_tolerance": 5,
-        "range_window": 30
+        "range_window": 30,
+        "plots_output_file" : "plots_combined.txt"
     },
     "radar": {
         "max_azimuth_diff_for_overlap": 2.0,

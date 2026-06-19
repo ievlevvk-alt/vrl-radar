@@ -1,3 +1,10 @@
+
+./tools/1_generate_replies ../config/radar.json 300 replies.txt
+./tools/2_3_combined ../config/radar.json replies.txt tracks_combined.txt
+./tools/4_radar_player replies.txt plots_combined.txt tracks_combined.txt
+
+
+
 # uvd-radar
 
 # 1. Генерация ответов (5 минут симуляции)

@@ -585,12 +585,13 @@ struct ProcessingConfig {
     bool debug_mode = false;
 };
 
+// tools/2_3_combined.cpp - ТОЛЬКО ФУНКЦИЯ load_config
+
 ProcessingConfig load_config(const std::string& config_file) {
     VRL_LOG_DEBUG(modules::CONFIG, "Loading config from: " + config_file);
     
     ProcessingConfig config;
     
-    // ===== НОВЫЙ СПОСОБ ЗАГРУЗКИ - ТОЛЬКО ЭТО ИЗМЕНЕНО =====
     ConfigLoader loader;
     SystemConfig system_config;
     
@@ -612,26 +613,15 @@ ProcessingConfig load_config(const std::string& config_file) {
     config.revolution_time = 5.0;
     config.debug_mode = system_config.tracker.debug_mode;
     
-    config.plots_file = "";
+    // ===== ЧИТАЕМ plots_output_file ИЗ SystemConfig =====
+    config.plots_file = system_config.processing.plots_output_file;
     
     VRL_LOG_INFO(modules::CONFIG, "Configuration loaded successfully");
-    VRL_LOG_DEBUG(modules::CONFIG, "  Range threshold bins: " + std::to_string(config.range_threshold_bins));
-    VRL_LOG_DEBUG(modules::CONFIG, "  Azimuth threshold bins: " + std::to_string(config.azimuth_threshold_bins));
-    VRL_LOG_DEBUG(modules::CONFIG, "  Completion gap bins: " + std::to_string(config.completion_gap_bins));
-    VRL_LOG_DEBUG(modules::CONFIG, "  Max gate distance: " + std::to_string(config.max_gate_distance_km) + " km");
-    VRL_LOG_DEBUG(modules::CONFIG, "  Max gate azimuth: " + std::to_string(config.max_gate_azimuth_deg) + "°");
-    VRL_LOG_DEBUG(modules::CONFIG, "  Min hits to confirm: " + std::to_string(config.min_hits_to_confirm));
-    VRL_LOG_DEBUG(modules::CONFIG, "  Max coast count: " + std::to_string(config.max_coast_count));
-    VRL_LOG_DEBUG(modules::CONFIG, "  Process noise: " + std::to_string(config.process_noise));
-    VRL_LOG_DEBUG(modules::CONFIG, "  Measurement noise: " + std::to_string(config.measurement_noise));
-    VRL_LOG_DEBUG(modules::CONFIG, "  Revolution time: " + std::to_string(config.revolution_time));
-    VRL_LOG_DEBUG(modules::CONFIG, "  Debug mode: " + std::string(config.debug_mode ? "true" : "false"));
-    if (!config.plots_file.empty()) {
-        VRL_LOG_DEBUG(modules::CONFIG, "  Plots output: " + config.plots_file);
-    }
+    VRL_LOG_DEBUG(modules::CONFIG, "  Plots output: " + config.plots_file);
     
     return config;
 }
+
 
 // ============================================================================
 // MAIN

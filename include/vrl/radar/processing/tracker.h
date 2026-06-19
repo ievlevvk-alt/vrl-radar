@@ -4,11 +4,12 @@
 #include "../core/types.h"
 #include "../core/replies.h"
 #include "../core/config.h"
-#include "kalman_filter.h"  // <-- ДОБАВЛЯЕМ ЭТУ СТРОКУ
+#include "kalman_filter.h"
 #include <vector>
 #include <map>
 #include <memory>
 #include <optional>
+#include <cstddef>
 
 namespace vrl {
 namespace radar {
@@ -79,7 +80,7 @@ public:
 private:
     struct TrackWithFilter {
         Track track;
-        RevolutionKalmanFilter filter;  // Теперь это определено через include
+        RevolutionKalmanFilter filter;
         
         TrackWithFilter() = default;
         TrackWithFilter(const Track& t, const RevolutionKalmanFilter& f)

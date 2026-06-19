@@ -118,16 +118,15 @@ bool ConfigLoader::parse_config(const json& j, SystemConfig& config) {
             if (p.contains("range_tolerance")) config.processing.range_tolerance = p["range_tolerance"].get<uint16_t>();
             if (p.contains("min_hits")) config.processing.min_hits = p["min_hits"].get<int>();
             if (p.contains("output_file")) config.processing.output_file = p["output_file"].get<std::string>();
-            // Дополнительные поля для processing
-            if (p.contains("range_threshold_bins")) {
-                // Эти поля могут быть в старом config.h, но мы их игнорируем если их нет
-                // или можно добавить если они есть
+            // ДОБАВЛЕНО:
+            if (p.contains("plots_output_file")) {
+                config.processing.plots_output_file = p["plots_output_file"].get<std::string>();
             }
         }
         
         // Общие параметры
         if (j.contains("beamwidth_deg")) config.beamwidth_deg = j["beamwidth_deg"].get<double>();
-        // revolution_time нет в SystemConfig, пропускаем
+        if (j.contains("revolution_time")) config.revolution_time = j["revolution_time"].get<double>();
         
         // RBS Targets
         if (j.contains("rbs_targets")) {
@@ -202,18 +201,19 @@ json ConfigLoader::to_json(const SystemConfig& config) {
         {"debug_mode", config.tracker.debug_mode}
     };
     
-    // Processing
+    // Processing - ДОБАВЛЕНА СТРОКА plots_output_file
     j["processing"] = {
         {"max_gap_azimuth", config.processing.max_gap_azimuth},
         {"range_window", config.processing.range_window},
         {"range_tolerance", config.processing.range_tolerance},
         {"min_hits", config.processing.min_hits},
-        {"output_file", config.processing.output_file}
+        {"output_file", config.processing.output_file},
+        {"plots_output_file", config.processing.plots_output_file}
     };
     
     // Общие параметры
     j["beamwidth_deg"] = config.beamwidth_deg;
-    // revolution_time нет в SystemConfig, пропускаем
+    j["revolution_time"] = config.revolution_time;
     
     // RBS Targets
     j["rbs_targets"] = json::array();
