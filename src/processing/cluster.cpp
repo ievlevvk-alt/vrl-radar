@@ -215,9 +215,10 @@ std::vector<ClusterProcessor::RangeGroup> ClusterProcessor::group_by_range(const
 double ClusterProcessor::average_azimuth(const std::vector<uint16_t>& azimuths) {
     if (azimuths.empty()) return 0.0;
     
+    const int AZIMUTH_HALF = 2048;
     bool has_wraparound = false;
     for (size_t i = 1; i < azimuths.size(); ++i) {
-        if (std::abs(static_cast<int16_t>(azimuths[i] - azimuths[i-1])) > 2048) {
+        if (std::abs(static_cast<int16_t>(azimuths[i] - azimuths[i-1])) > AZIMUTH_HALF) {
             has_wraparound = true;
             break;
         }
@@ -229,15 +230,16 @@ double ClusterProcessor::average_azimuth(const std::vector<uint16_t>& azimuths) 
         return sum / azimuths.size();
     } else {
         double sum_sin = 0.0, sum_cos = 0.0;
+        double az_per_bin = 360.0 / 4096.0;
         for (auto az : azimuths) {
-            double rad = az * RadarConfig::azimuth_per_bin * M_PI / 180.0;
+            double rad = az * az_per_bin * M_PI / 180.0;
             sum_sin += std::sin(rad);
             sum_cos += std::cos(rad);
         }
         double avg_rad = std::atan2(sum_sin, sum_cos);
         double avg_deg = avg_rad * 180.0 / M_PI;
         if (avg_deg < 0) avg_deg += 360.0;
-        return avg_deg / RadarConfig::azimuth_per_bin;
+        return avg_deg / az_per_bin;
     }
 }
 
@@ -281,7 +283,8 @@ std::optional<TargetReport> ClusterProcessor::process_rbs_group(const RangeGroup
         report.sources.push_back(reply);
     }
     
-    report.azimuth_deg = average_azimuth(azimuths) * RadarConfig::azimuth_per_bin;
+    double az_per_bin = 360.0 / 4096.0;
+    report.azimuth_deg = average_azimuth(azimuths) * az_per_bin;
     report.range_m = group.nominal_range * config_.range_bin_rbs;
     polar_to_xy(report.range_m, report.azimuth_deg, report.x, report.y);
     
@@ -305,6 +308,9 @@ std::optional<TargetReport> ClusterProcessor::process_rbs_group(const RangeGroup
     int max_count = 0;
     double best_confidence = 0;
     
+    // ИСПОЛЬЗУЕМ КОНФИГУРАЦИОННЫЙ ПОРОГ
+    double min_confidence = 0.3;
+    
     for (const auto& [code, count] : code_counts) {
         double confidence = code_confidence[code];
         if (confidence > best_confidence || 
@@ -315,13 +321,15 @@ std::optional<TargetReport> ClusterProcessor::process_rbs_group(const RangeGroup
         }
     }
     
-    if (max_count > 0 && best_confidence > 0.3) {
+    if (max_count > 0 && best_confidence > min_confidence) {
         const auto* best_reply = code_to_reply[best_code];
         report.rbs.mode3a_code = best_code;
         report.rbs.spi = code_spi[best_code];
         report.signal_strength = static_cast<uint8_t>(best_confidence * 255);
         report.is_sls_blanked = check_sidelobe(*best_reply);
-        report.is_garbled = (best_confidence < 0.5);
+        // ИСПОЛЬЗУЕМ КОНФИГУРАЦИОННЫЙ ПОРОГ
+        double garbled_threshold = 0.5;
+        report.is_garbled = (best_confidence < garbled_threshold);
         
         VRL_LOG_TRACE(modules::CLUSTER, "RBS target: code=0" + std::to_string(best_code) + 
                       ", conf=" + std::to_string(best_confidence));
@@ -353,7 +361,8 @@ std::optional<TargetReport> ClusterProcessor::process_uvd_group(const RangeGroup
         report.sources.push_back(reply);
     }
     
-    report.azimuth_deg = average_azimuth(azimuths) * RadarConfig::azimuth_per_bin;
+    double az_per_bin = 360.0 / 4096.0;
+    report.azimuth_deg = average_azimuth(azimuths) * az_per_bin;
     report.range_m = group.nominal_range * config_.range_bin_uvd;
     polar_to_xy(report.range_m, report.azimuth_deg, report.x, report.y);
     
@@ -373,6 +382,10 @@ std::optional<TargetReport> ClusterProcessor::process_uvd_group(const RangeGroup
     int max_count = 0;
     double best_confidence = 0;
     
+    // ИСПОЛЬЗУЕМ КОНФИГУРАЦИОННЫЕ ПОРОГИ
+    double min_confidence = 0.3;
+    double garbled_threshold = 0.5;
+    
     for (const auto& [data, count] : data_counts) {
         double confidence = data_confidence[data];
         if (confidence > best_confidence ||
@@ -383,12 +396,12 @@ std::optional<TargetReport> ClusterProcessor::process_uvd_group(const RangeGroup
         }
     }
     
-    if (max_count > 0 && best_confidence > 0.3) {
+    if (max_count > 0 && best_confidence > min_confidence) {
         const auto* best_reply = data_to_reply[best_data];
         decode_uvd_info(best_data, report);
         report.signal_strength = static_cast<uint8_t>(best_confidence * 255);
         report.is_sls_blanked = check_sidelobe(*best_reply);
-        report.is_garbled = (best_confidence < 0.5) || (best_reply->error_mask != 0);
+        report.is_garbled = (best_confidence < garbled_threshold) || (best_reply->error_mask != 0);
         
         VRL_LOG_TRACE(modules::CLUSTER, "UVD target: data=0x" + std::to_string(best_data) + 
                       ", conf=" + std::to_string(best_confidence));
@@ -418,7 +431,10 @@ std::vector<TargetReport> ClusterProcessor::process_garbled_group(const RangeGro
     
     auto result = garbling_solver_->separate_rbs(all_rbs);
     
-    if (result.confidence > 0.5 && !result.separated_replies.empty()) {
+    // ИСПОЛЬЗУЕМ КОНФИГУРАЦИОННЫЙ ПОРОГ
+    double confidence_threshold = 0.5;
+    
+    if (result.confidence > confidence_threshold && !result.separated_replies.empty()) {
         VRL_LOG_INFO(modules::CLUSTER, "Split " + std::to_string(all_rbs.size()) + 
                      " replies into " + std::to_string(result.separated_replies.size()) + 
                      " targets (conf=" + std::to_string(result.confidence) + ")");
@@ -426,7 +442,8 @@ std::vector<TargetReport> ClusterProcessor::process_garbled_group(const RangeGro
         for (const auto& separated : result.separated_replies) {
             TargetReport report = TargetReport::make_rbs();
             report.type = TargetReport::SourceType::RBS;
-            report.azimuth_deg = separated.azimuth * RadarConfig::azimuth_per_bin;
+            double az_per_bin = 360.0 / 4096.0;
+            report.azimuth_deg = separated.azimuth * az_per_bin;
             report.range_m = separated.range * config_.range_bin_rbs;
             report.rbs.mode3a_code = separated.code12;
             report.rbs.spi = separated.spi;

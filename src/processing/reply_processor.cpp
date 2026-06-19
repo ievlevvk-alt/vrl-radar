@@ -12,6 +12,13 @@ ReplyProcessor::ReplyProcessor(const RadarConfig& config) : config_(config) {}
 ReplyFeatures ReplyProcessor::analyze_rbs(const RBSReply& reply) {
     ReplyFeatures features;
     
+    // КОНСТАНТЫ ДЛЯ РАСЧЕТА УВЕРЕННОСТИ
+    const double WEIGHT_FRAMING = 0.3;
+    const double WEIGHT_SNR = 0.3;
+    const double WEIGHT_STABILITY = 0.2;
+    const double WEIGHT_ERRORS = 0.2;
+    const double MAX_SNR_DB = 30.0;
+    
     features.snr_estimate = estimate_snr(reply);
     features.has_framing = (reply.f1() > config_.min_amplitude && 
                             reply.f2() > config_.min_amplitude);
@@ -19,10 +26,12 @@ ReplyFeatures ReplyProcessor::analyze_rbs(const RBSReply& reply) {
     features.pulse_stability = calculate_pulse_ratio(reply);
     features.bit_errors = count_bit_errors(reply);
     
-    features.confidence = (features.has_framing ? 0.3 : 0) +
-                          (features.snr_estimate > 15 ? 0.3 : features.snr_estimate / 50.0) +
-                          (features.pulse_stability > 0.7 ? 0.2 : features.pulse_stability / 3.5) +
-                          (features.bit_errors == 0 ? 0.2 : 0);
+    features.confidence = (features.has_framing ? WEIGHT_FRAMING : 0) +
+                          (features.snr_estimate > 15 ? WEIGHT_SNR : 
+                           features.snr_estimate / MAX_SNR_DB * WEIGHT_SNR) +
+                          (features.pulse_stability > 0.7 ? WEIGHT_STABILITY : 
+                           features.pulse_stability / 3.5 * WEIGHT_STABILITY) +
+                          (features.bit_errors == 0 ? WEIGHT_ERRORS : 0);
     
     return features;
 }
@@ -30,18 +39,26 @@ ReplyFeatures ReplyProcessor::analyze_rbs(const RBSReply& reply) {
 ReplyFeatures ReplyProcessor::analyze_uvd(const UVDReply& reply) {
     ReplyFeatures features;
     
+    // КОНСТАНТЫ ДЛЯ РАСЧЕТА УВЕРЕННОСТИ UVD
+    const double WEIGHT_SNR = 0.5;
+    const double WEIGHT_ERRORS = 0.3;
+    const double WEIGHT_STABILITY = 0.2;
+    const double MAX_SNR_DB = 30.0;
+    
     features.snr_estimate = estimate_snr(reply);
     features.pulse_stability = calculate_pulse_ratio(reply);
     features.bit_errors = (reply.error_mask != 0) ? __builtin_popcount(reply.error_mask) : 0;
     
-    features.confidence = (features.snr_estimate > 15 ? 0.5 : features.snr_estimate / 30.0) +
-                          (features.bit_errors == 0 ? 0.3 : 0) +
-                          (features.pulse_stability > 0.7 ? 0.2 : 0);
+    features.confidence = (features.snr_estimate > 15 ? WEIGHT_SNR : 
+                           features.snr_estimate / MAX_SNR_DB * WEIGHT_SNR) +
+                          (features.bit_errors == 0 ? WEIGHT_ERRORS : 0) +
+                          (features.pulse_stability > 0.7 ? WEIGHT_STABILITY : 0);
     
     return features;
 }
 
 double ReplyProcessor::estimate_snr(const RBSReply& reply) {
+    const double MAX_SNR_DB = 30.0;
     double signal = 0;
     double noise = 0;
     int signal_count = 0;
@@ -57,18 +74,19 @@ double ReplyProcessor::estimate_snr(const RBSReply& reply) {
         }
     }
     
-    if (noise_count == 0) return 30.0;
+    if (noise_count == 0) return MAX_SNR_DB;
     
     double avg_signal = signal / signal_count;
     double avg_noise = noise / noise_count;
     
-    if (avg_noise == 0) return 30.0;
+    if (avg_noise == 0) return MAX_SNR_DB;
     
     double snr_linear = avg_signal / avg_noise;
     return 20.0 * std::log10(snr_linear);
 }
 
 double ReplyProcessor::estimate_snr(const UVDReply& reply) {
+    const double MAX_SNR_DB = 30.0;
     double signal = 0;
     double noise = 0;
     int signal_count = 0;
@@ -84,12 +102,12 @@ double ReplyProcessor::estimate_snr(const UVDReply& reply) {
         }
     }
     
-    if (noise_count == 0) return 30.0;
+    if (noise_count == 0) return MAX_SNR_DB;
     
     double avg_signal = signal / signal_count;
     double avg_noise = noise / noise_count;
     
-    if (avg_noise == 0) return 30.0;
+    if (avg_noise == 0) return MAX_SNR_DB;
     
     double snr_linear = avg_signal / avg_noise;
     return 20.0 * std::log10(snr_linear);
@@ -186,6 +204,7 @@ uint32_t ReplyProcessor::decode_uvd_with_errors(
         bool bit2_one = (left2 <= threshold && right2 > threshold);
         
         if ((bit1 && bit2) || (bit1 && !bit2 && !bit2_one) || (bit2 && !bit1 && !bit1_one)) {
+            // Бит = 0
         } else if ((bit1_one && bit2_one) || (bit1_one && !bit2 && !bit2_one) || (bit2_one && !bit1 && !bit1_one)) {
             data |= (1 << i);
         }

@@ -1,13 +1,56 @@
 {
     "beamwidth_deg": 5.0,
+    "revolution_time": 5.0,
+    
+    "azimuth": {
+        "azimuth_bins": 4096
+    },
+    
     "processing": {
         "max_gap_azimuth": 8,
         "min_hits": 2,
         "output_file": "targets.txt",
         "range_tolerance": 5,
         "range_window": 30,
-        "plots_output_file" : "plots_combined.txt"
+        "plots_output_file": "plots_combined.txt",
+        "min_cluster_hits": 2,
+        "range_threshold_bins": 5,
+        "azimuth_threshold_bins": 3,
+        "completion_gap_bins": 8,
+        "min_confidence": 0.3,
+        "garbled_confidence_threshold": 0.5,
+        "min_uvd_confidence": 0.3,
+        "uvd_garbled_threshold": 0.5
     },
+    
+    "confidence": {
+        "initial_track_confidence": 0.1,
+        "coast_confidence_decay": 0.05,
+        "min_track_confidence": 0.0,
+        "max_track_confidence": 1.0,
+        "confidence_rbs_weight_framing": 0.3,
+        "confidence_rbs_weight_snr": 0.3,
+        "confidence_rbs_weight_stability": 0.2,
+        "confidence_rbs_weight_errors": 0.2,
+        "confidence_uvd_weight_snr": 0.5,
+        "confidence_uvd_weight_errors": 0.3,
+        "confidence_uvd_weight_stability": 0.2
+    },
+    
+    "simulator_constants": {
+        "base_signal_power": 128.0,
+        "amp_variation_min": 0.5,
+        "amp_variation_max": 1.5,
+        "uvd_error_threshold": 50.0,
+        "max_snr_db": 30.0,
+        "min_speed_ms": 0.001,
+        "min_time_delta": 0.1,
+        "max_mode_c_code": 4095,
+        "max_mode_c_attempts": 100,
+        "display_beamwidth_deg": 3.0,
+        "min_amplitude_ratio_for_separation": 0.3
+    },
+    
     "radar": {
         "max_azimuth_diff_for_overlap": 2.0,
         "max_range_diff_for_overlap": 10,
@@ -15,11 +58,37 @@
         "range_bin_rbs": 30.0,
         "range_bin_uvd": 60.0
     },
+    
     "rbs": {
         "amp_variation": 0.1,
         "f1f2_amp_ratio": 1.0,
         "snr_db": 20.0
     },
+    
+    "uvd": {
+        "error_probability": 0.01,
+        "snr_db": 20.0
+    },
+    
+    "sls": {
+        "enabled": false,
+        "main_to_sls_ratio": 1.0,
+        "sidelobe_probability": 0.1,
+        "sls_attenuation_db": 20.0
+    },
+    
+    "tracker": {
+        "debug_mode": false,
+        "enable_rbs_tracking": true,
+        "enable_uvd_tracking": true,
+        "max_coast_count": 10,
+        "max_gate_azimuth": 30.0,
+        "max_gate_distance": 3000.0,
+        "measurement_noise": 0.1,
+        "min_hits_to_confirm": 3,
+        "process_noise": 0.5
+    },
+    
     "rbs_targets": [
         {
             "alternate_code_altitude": true,
@@ -41,27 +110,7 @@
             "use_linear_motion": true
         }
     ],
-    "sls": {
-        "enabled": false,
-        "main_to_sls_ratio": 1.0,
-        "sidelobe_probability": 0.1,
-        "sls_attenuation_db": 20.0
-    },
-    "tracker": {
-        "debug_mode": false,
-        "enable_rbs_tracking": true,
-        "enable_uvd_tracking": true,
-        "max_coast_count": 10,
-        "max_gate_azimuth": 30.0,
-        "max_gate_distance": 3000.0,
-        "measurement_noise": 0.1,
-        "min_hits_to_confirm": 3,
-        "process_noise": 0.5
-    },
-    "uvd": {
-        "error_probability": 0.01,
-        "snr_db": 20.0
-    },
+    
     "uvd_targets": [
         {
             "alternate_code_altitude": false,

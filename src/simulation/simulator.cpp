@@ -24,7 +24,8 @@ void ReplySimulator::add_noise_to_amplitudes(
     
     if (snr_db <= 0) return;
     
-    double signal_power = 128.0;
+    const double BASE_SIGNAL_POWER = 128.0;
+    double signal_power = BASE_SIGNAL_POWER;
     double noise_power = signal_power / std::pow(10.0, snr_db / 10.0);
     double noise_std = std::sqrt(noise_power);
     
@@ -49,7 +50,8 @@ void ReplySimulator::add_noise_to_amplitudes(
     
     if (snr_db <= 0) return;
     
-    double signal_power = 128.0;
+    const double BASE_SIGNAL_POWER = 128.0;
+    double signal_power = BASE_SIGNAL_POWER;
     double noise_power = signal_power / std::pow(10.0, snr_db / 10.0);
     double noise_std = std::sqrt(noise_power);
     
@@ -163,10 +165,13 @@ RBSReply ReplySimulator::generate_rbs(
     
     if (config_.rbs.amp_variation > 0) {
         std::normal_distribution<double> amp_dist(1.0, config_.rbs.amp_variation);
+        // ИСПОЛЬЗУЕМ КОНСТАНТЫ
+        const double AMP_VARIATION_MIN = 0.5;
+        const double AMP_VARIATION_MAX = 1.5;
         int varied = 0;
         for (auto& amp : reply.ether_amplitudes) {
             if (amp > 0) {
-                double factor = std::clamp(amp_dist(rng_), 0.5, 1.5);
+                double factor = std::clamp(amp_dist(rng_), AMP_VARIATION_MIN, AMP_VARIATION_MAX);
                 amp = static_cast<uint8_t>(std::clamp(amp * factor, 0.0, 255.0));
                 varied++;
             }
@@ -177,7 +182,8 @@ RBSReply ReplySimulator::generate_rbs(
     generate_sls_channel_rbs(reply);
     reply.is_valid = true;
     
-    double az_rad = azimuth * RadarConfig::azimuth_per_bin * M_PI / 180.0;
+    double az_per_bin = 360.0 / 4096.0;
+    double az_rad = azimuth * az_per_bin * M_PI / 180.0;
     double range_m = range * config_.radar.range_bin_rbs;
     reply.x = range_m * sin(az_rad);
     reply.y = range_m * cos(az_rad);
@@ -219,8 +225,9 @@ UVDReply ReplySimulator::generate_uvd(
     add_noise_to_amplitudes(reply.ether_amplitudes, config_.uvd.snr_db);
     generate_sls_channel_uvd(reply);
     
+    // ИСПОЛЬЗУЕМ КОНСТАНТУ
+    const uint8_t UVD_ERROR_THRESHOLD = 50;
     reply.error_mask = 0;
-    uint8_t threshold = 50;
     int errors = 0;
     
     for (int i = 0; i < 20; ++i) {
@@ -229,10 +236,10 @@ UVDReply ReplySimulator::generate_uvd(
         uint8_t left2 = reply.ether_amplitudes[40 + i * 2];
         uint8_t right2 = reply.ether_amplitudes[40 + i * 2 + 1];
         
-        bool repeat1_one = (left1 <= threshold && right1 > threshold);
-        bool repeat2_one = (left2 <= threshold && right2 > threshold);
-        bool repeat1_zero = (left1 > threshold && right1 <= threshold);
-        bool repeat2_zero = (left2 > threshold && right2 <= threshold);
+        bool repeat1_one = (left1 <= UVD_ERROR_THRESHOLD && right1 > UVD_ERROR_THRESHOLD);
+        bool repeat2_one = (left2 <= UVD_ERROR_THRESHOLD && right2 > UVD_ERROR_THRESHOLD);
+        bool repeat1_zero = (left1 > UVD_ERROR_THRESHOLD && right1 <= UVD_ERROR_THRESHOLD);
+        bool repeat2_zero = (left2 > UVD_ERROR_THRESHOLD && right2 <= UVD_ERROR_THRESHOLD);
         
         if (repeat1_one != repeat2_one || repeat1_zero != repeat2_zero) {
             reply.error_mask |= (1 << i);
@@ -246,7 +253,8 @@ UVDReply ReplySimulator::generate_uvd(
     
     reply.is_valid = true;
     
-    double az_rad = azimuth * RadarConfig::azimuth_per_bin * M_PI / 180.0;
+    double az_per_bin = 360.0 / 4096.0;
+    double az_rad = azimuth * az_per_bin * M_PI / 180.0;
     double range_m = range * config_.radar.range_bin_uvd;
     reply.x = range_m * sin(az_rad);
     reply.y = range_m * cos(az_rad);
@@ -288,10 +296,10 @@ uint32_t ReplySimulator::compute_uvd_error_mask(
     const std::array<uint8_t, UVDReply::ETHER_POSITIONS>& amps,
     uint32_t original_data20) {
     
-    (void)original_data20;  // Подавляем предупреждение
+    (void)original_data20;
     
+    const uint8_t UVD_ERROR_THRESHOLD = 50;
     uint32_t mask = 0;
-    uint8_t threshold = 50;
     
     for (int i = 0; i < 20; ++i) {
         uint8_t left1 = amps[i * 2];
@@ -299,10 +307,10 @@ uint32_t ReplySimulator::compute_uvd_error_mask(
         uint8_t left2 = amps[40 + i * 2];
         uint8_t right2 = amps[40 + i * 2 + 1];
         
-        bool repeat1_one = (left1 <= threshold && right1 > threshold);
-        bool repeat2_one = (left2 <= threshold && right2 > threshold);
-        bool repeat1_zero = (left1 > threshold && right1 <= threshold);
-        bool repeat2_zero = (left2 > threshold && right2 <= threshold);
+        bool repeat1_one = (left1 <= UVD_ERROR_THRESHOLD && right1 > UVD_ERROR_THRESHOLD);
+        bool repeat2_one = (left2 <= UVD_ERROR_THRESHOLD && right2 > UVD_ERROR_THRESHOLD);
+        bool repeat1_zero = (left1 > UVD_ERROR_THRESHOLD && right1 <= UVD_ERROR_THRESHOLD);
+        bool repeat2_zero = (left2 > UVD_ERROR_THRESHOLD && right2 <= UVD_ERROR_THRESHOLD);
         
         if (repeat1_one != repeat2_one || repeat1_zero != repeat2_zero) {
             mask |= (1 << i);

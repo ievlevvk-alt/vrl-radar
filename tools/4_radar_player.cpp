@@ -537,6 +537,9 @@ double RadarPlayer::get_current_azimuth(double time) {
     return progress * 360.0;
 }
 
+// КОНСТАНТА
+const double DISPLAY_BEAMWIDTH_DEG = 3.0;
+
 bool RadarPlayer::is_visible_by_beam(double object_time, double object_azimuth_deg) {
     double time_offset = object_time - current_time_;
     if (time_offset > lookahead_time_) return false;
@@ -546,7 +549,7 @@ bool RadarPlayer::is_visible_by_beam(double object_time, double object_azimuth_d
     double az_diff = std::abs(object_azimuth_deg - beam_azimuth);
     az_diff = std::min(az_diff, 360.0 - az_diff);
     
-    return az_diff < 3.0;
+    return az_diff < DISPLAY_BEAMWIDTH_DEG;
 }
 
 void RadarPlayer::render() {

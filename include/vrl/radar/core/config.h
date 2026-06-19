@@ -121,8 +121,56 @@ struct SystemConfig {
         uint16_t range_tolerance{5};
         int min_hits{2};
         std::string output_file{"targets.txt"};
-        std::string plots_output_file{""};  // <-- ДОБАВЛЕНО
+        std::string plots_output_file{""};
+        
+        // НОВЫЕ ПАРАМЕТРЫ ДЛЯ КЛАСТЕРИЗАЦИИ
+        int min_cluster_hits{2};
+        int range_threshold_bins{5};
+        int azimuth_threshold_bins{3};
+        int completion_gap_bins{8};
+        double min_confidence{0.3};
+        double garbled_confidence_threshold{0.5};
+        double min_uvd_confidence{0.3};
+        double uvd_garbled_threshold{0.5};
     } processing;
+    
+    // НОВАЯ СЕКЦИЯ: ПАРАМЕТРЫ УВЕРЕННОСТИ
+    struct ConfidenceConfig {
+        double initial_track_confidence{0.1};
+        double coast_confidence_decay{0.05};
+        double min_track_confidence{0.0};
+        double max_track_confidence{1.0};
+        double confidence_rbs_weight_framing{0.3};
+        double confidence_rbs_weight_snr{0.3};
+        double confidence_rbs_weight_stability{0.2};
+        double confidence_rbs_weight_errors{0.2};
+        double confidence_uvd_weight_snr{0.5};
+        double confidence_uvd_weight_errors{0.3};
+        double confidence_uvd_weight_stability{0.2};
+    } confidence;
+    
+    // НОВАЯ СЕКЦИЯ: ПАРАМЕТРЫ СИМУЛЯТОРА
+    struct SimulatorConstants {
+        double base_signal_power{128.0};
+        double amp_variation_min{0.5};
+        double amp_variation_max{1.5};
+        double uvd_error_threshold{50.0};
+        double max_snr_db{30.0};
+        double min_speed_ms{0.001};
+        double min_time_delta{0.1};
+        int max_mode_c_code{4095};
+        int max_mode_c_attempts{100};
+        double display_beamwidth_deg{3.0};
+        double min_amplitude_ratio_for_separation{0.3};
+    } simulator_constants;
+    
+    // НОВАЯ СЕКЦИЯ: АЗИМУТАЛЬНЫЕ КОНСТАНТЫ
+    struct AzimuthConstants {
+        int azimuth_bins{4096};
+        int azimuth_half{2048};
+        double azimuth_per_bin_deg{360.0 / 4096.0};
+        double azimuth_per_bin_rad{M_PI / 2048.0};
+    } azimuth;
     
     double beamwidth_deg{5.0};
     double revolution_time{5.0};

@@ -54,6 +54,7 @@ bool ConfigLoader::parse_target(const json& j, GeneratedTarget& target, bool is_
     }
 }
 
+
 bool ConfigLoader::parse_config(const json& j, SystemConfig& config) {
     try {
         // Radar
@@ -110,7 +111,7 @@ bool ConfigLoader::parse_config(const json& j, SystemConfig& config) {
             if (t.contains("debug_mode")) config.tracker.debug_mode = t["debug_mode"].get<bool>();
         }
         
-        // Processing
+        // Processing - РАСШИРЯЕМ
         if (j.contains("processing")) {
             const auto& p = j["processing"];
             if (p.contains("max_gap_azimuth")) config.processing.max_gap_azimuth = p["max_gap_azimuth"].get<int>();
@@ -118,10 +119,67 @@ bool ConfigLoader::parse_config(const json& j, SystemConfig& config) {
             if (p.contains("range_tolerance")) config.processing.range_tolerance = p["range_tolerance"].get<uint16_t>();
             if (p.contains("min_hits")) config.processing.min_hits = p["min_hits"].get<int>();
             if (p.contains("output_file")) config.processing.output_file = p["output_file"].get<std::string>();
-            // ДОБАВЛЕНО:
             if (p.contains("plots_output_file")) {
                 config.processing.plots_output_file = p["plots_output_file"].get<std::string>();
             }
+            
+            // НОВЫЕ ПАРАМЕТРЫ
+            if (p.contains("min_cluster_hits")) config.processing.min_cluster_hits = p["min_cluster_hits"].get<int>();
+            if (p.contains("range_threshold_bins")) config.processing.range_threshold_bins = p["range_threshold_bins"].get<int>();
+            if (p.contains("azimuth_threshold_bins")) config.processing.azimuth_threshold_bins = p["azimuth_threshold_bins"].get<int>();
+            if (p.contains("completion_gap_bins")) config.processing.completion_gap_bins = p["completion_gap_bins"].get<int>();
+            if (p.contains("min_confidence")) config.processing.min_confidence = p["min_confidence"].get<double>();
+            if (p.contains("garbled_confidence_threshold")) {
+                config.processing.garbled_confidence_threshold = p["garbled_confidence_threshold"].get<double>();
+            }
+            if (p.contains("min_uvd_confidence")) config.processing.min_uvd_confidence = p["min_uvd_confidence"].get<double>();
+            if (p.contains("uvd_garbled_threshold")) {
+                config.processing.uvd_garbled_threshold = p["uvd_garbled_threshold"].get<double>();
+            }
+        }
+        
+        // НОВАЯ СЕКЦИЯ: CONFIDENCE
+        if (j.contains("confidence")) {
+            const auto& c = j["confidence"];
+            if (c.contains("initial_track_confidence")) config.confidence.initial_track_confidence = c["initial_track_confidence"].get<double>();
+            if (c.contains("coast_confidence_decay")) config.confidence.coast_confidence_decay = c["coast_confidence_decay"].get<double>();
+            if (c.contains("min_track_confidence")) config.confidence.min_track_confidence = c["min_track_confidence"].get<double>();
+            if (c.contains("max_track_confidence")) config.confidence.max_track_confidence = c["max_track_confidence"].get<double>();
+            if (c.contains("confidence_rbs_weight_framing")) config.confidence.confidence_rbs_weight_framing = c["confidence_rbs_weight_framing"].get<double>();
+            if (c.contains("confidence_rbs_weight_snr")) config.confidence.confidence_rbs_weight_snr = c["confidence_rbs_weight_snr"].get<double>();
+            if (c.contains("confidence_rbs_weight_stability")) config.confidence.confidence_rbs_weight_stability = c["confidence_rbs_weight_stability"].get<double>();
+            if (c.contains("confidence_rbs_weight_errors")) config.confidence.confidence_rbs_weight_errors = c["confidence_rbs_weight_errors"].get<double>();
+            if (c.contains("confidence_uvd_weight_snr")) config.confidence.confidence_uvd_weight_snr = c["confidence_uvd_weight_snr"].get<double>();
+            if (c.contains("confidence_uvd_weight_errors")) config.confidence.confidence_uvd_weight_errors = c["confidence_uvd_weight_errors"].get<double>();
+            if (c.contains("confidence_uvd_weight_stability")) config.confidence.confidence_uvd_weight_stability = c["confidence_uvd_weight_stability"].get<double>();
+        }
+        
+        // НОВАЯ СЕКЦИЯ: SIMULATOR_CONSTANTS
+        if (j.contains("simulator_constants")) {
+            const auto& s = j["simulator_constants"];
+            if (s.contains("base_signal_power")) config.simulator_constants.base_signal_power = s["base_signal_power"].get<double>();
+            if (s.contains("amp_variation_min")) config.simulator_constants.amp_variation_min = s["amp_variation_min"].get<double>();
+            if (s.contains("amp_variation_max")) config.simulator_constants.amp_variation_max = s["amp_variation_max"].get<double>();
+            if (s.contains("uvd_error_threshold")) config.simulator_constants.uvd_error_threshold = s["uvd_error_threshold"].get<double>();
+            if (s.contains("max_snr_db")) config.simulator_constants.max_snr_db = s["max_snr_db"].get<double>();
+            if (s.contains("min_speed_ms")) config.simulator_constants.min_speed_ms = s["min_speed_ms"].get<double>();
+            if (s.contains("min_time_delta")) config.simulator_constants.min_time_delta = s["min_time_delta"].get<double>();
+            if (s.contains("max_mode_c_code")) config.simulator_constants.max_mode_c_code = s["max_mode_c_code"].get<int>();
+            if (s.contains("max_mode_c_attempts")) config.simulator_constants.max_mode_c_attempts = s["max_mode_c_attempts"].get<int>();
+            if (s.contains("display_beamwidth_deg")) config.simulator_constants.display_beamwidth_deg = s["display_beamwidth_deg"].get<double>();
+            if (s.contains("min_amplitude_ratio_for_separation")) {
+                config.simulator_constants.min_amplitude_ratio_for_separation = s["min_amplitude_ratio_for_separation"].get<double>();
+            }
+        }
+        
+        // НОВАЯ СЕКЦИЯ: AZIMUTH
+        if (j.contains("azimuth")) {
+            const auto& a = j["azimuth"];
+            if (a.contains("azimuth_bins")) config.azimuth.azimuth_bins = a["azimuth_bins"].get<int>();
+            // azimuth_half вычисляется автоматически
+            config.azimuth.azimuth_half = config.azimuth.azimuth_bins / 2;
+            config.azimuth.azimuth_per_bin_deg = 360.0 / config.azimuth.azimuth_bins;
+            config.azimuth.azimuth_per_bin_rad = M_PI / (config.azimuth.azimuth_bins / 2);
         }
         
         // Общие параметры
@@ -201,14 +259,58 @@ json ConfigLoader::to_json(const SystemConfig& config) {
         {"debug_mode", config.tracker.debug_mode}
     };
     
-    // Processing - ДОБАВЛЕНА СТРОКА plots_output_file
+    // Processing - РАСШИРЯЕМ
     j["processing"] = {
         {"max_gap_azimuth", config.processing.max_gap_azimuth},
         {"range_window", config.processing.range_window},
         {"range_tolerance", config.processing.range_tolerance},
         {"min_hits", config.processing.min_hits},
         {"output_file", config.processing.output_file},
-        {"plots_output_file", config.processing.plots_output_file}
+        {"plots_output_file", config.processing.plots_output_file},
+        // НОВЫЕ ПАРАМЕТРЫ
+        {"min_cluster_hits", config.processing.min_cluster_hits},
+        {"range_threshold_bins", config.processing.range_threshold_bins},
+        {"azimuth_threshold_bins", config.processing.azimuth_threshold_bins},
+        {"completion_gap_bins", config.processing.completion_gap_bins},
+        {"min_confidence", config.processing.min_confidence},
+        {"garbled_confidence_threshold", config.processing.garbled_confidence_threshold},
+        {"min_uvd_confidence", config.processing.min_uvd_confidence},
+        {"uvd_garbled_threshold", config.processing.uvd_garbled_threshold}
+    };
+    
+    // НОВАЯ СЕКЦИЯ: CONFIDENCE
+    j["confidence"] = {
+        {"initial_track_confidence", config.confidence.initial_track_confidence},
+        {"coast_confidence_decay", config.confidence.coast_confidence_decay},
+        {"min_track_confidence", config.confidence.min_track_confidence},
+        {"max_track_confidence", config.confidence.max_track_confidence},
+        {"confidence_rbs_weight_framing", config.confidence.confidence_rbs_weight_framing},
+        {"confidence_rbs_weight_snr", config.confidence.confidence_rbs_weight_snr},
+        {"confidence_rbs_weight_stability", config.confidence.confidence_rbs_weight_stability},
+        {"confidence_rbs_weight_errors", config.confidence.confidence_rbs_weight_errors},
+        {"confidence_uvd_weight_snr", config.confidence.confidence_uvd_weight_snr},
+        {"confidence_uvd_weight_errors", config.confidence.confidence_uvd_weight_errors},
+        {"confidence_uvd_weight_stability", config.confidence.confidence_uvd_weight_stability}
+    };
+    
+    // НОВАЯ СЕКЦИЯ: SIMULATOR_CONSTANTS
+    j["simulator_constants"] = {
+        {"base_signal_power", config.simulator_constants.base_signal_power},
+        {"amp_variation_min", config.simulator_constants.amp_variation_min},
+        {"amp_variation_max", config.simulator_constants.amp_variation_max},
+        {"uvd_error_threshold", config.simulator_constants.uvd_error_threshold},
+        {"max_snr_db", config.simulator_constants.max_snr_db},
+        {"min_speed_ms", config.simulator_constants.min_speed_ms},
+        {"min_time_delta", config.simulator_constants.min_time_delta},
+        {"max_mode_c_code", config.simulator_constants.max_mode_c_code},
+        {"max_mode_c_attempts", config.simulator_constants.max_mode_c_attempts},
+        {"display_beamwidth_deg", config.simulator_constants.display_beamwidth_deg},
+        {"min_amplitude_ratio_for_separation", config.simulator_constants.min_amplitude_ratio_for_separation}
+    };
+    
+    // НОВАЯ СЕКЦИЯ: AZIMUTH
+    j["azimuth"] = {
+        {"azimuth_bins", config.azimuth.azimuth_bins}
     };
     
     // Общие параметры

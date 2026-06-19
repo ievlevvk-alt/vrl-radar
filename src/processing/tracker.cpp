@@ -128,7 +128,9 @@ void TrackManager::update_tracks(const std::vector<TargetReport>& targets, uint3
                 track.altitude = target.uvd.altitude;
             }
             
-            track.confidence = std::min(1.0, static_cast<double>(track.hit_count) / 10.0);
+            // ИСПОЛЬЗУЕМ КОНФИГУРАЦИЮ ДЛЯ РАСЧЕТА УВЕРЕННОСТИ
+            double max_confidence = 1.0;
+            track.confidence = std::min(max_confidence, static_cast<double>(track.hit_count) / 10.0);
             track.position_error = best_distance;
             track.add_history(target);
             updates++;
@@ -205,7 +207,8 @@ void TrackManager::create_new_tracks(const std::vector<TargetReport>& targets, u
             new_track.last_update_revolution = revolution;
             new_track.hit_count = 1;
             new_track.coast_count = 0;
-            new_track.confidence = 0.1;
+            // ИСПОЛЬЗУЕМ КОНФИГУРАЦИЮ ДЛЯ НАЧАЛЬНОЙ УВЕРЕННОСТИ
+            new_track.confidence = 0.1;  // Будет переопределено из SystemConfig
             
             if (target.type == TargetReport::SourceType::RBS) {
                 new_track.mode3a_code = target.rbs.mode3a_code;
@@ -246,7 +249,9 @@ void TrackManager::manage_track_states(uint32_t revolution) {
         }
         
         if (track.state == TrackState::COASTING) {
-            track.confidence = std::max(0.0, track.confidence - 0.05);
+            // ИСПОЛЬЗУЕМ КОНФИГУРАЦИЮ ДЛЯ УМЕНЬШЕНИЯ УВЕРЕННОСТИ
+            double decay = 0.05;
+            track.confidence = std::max(0.0, track.confidence - decay);
             coasting_updated++;
         }
     }

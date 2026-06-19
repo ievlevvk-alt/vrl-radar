@@ -470,6 +470,10 @@ private:
 // ОБРАБОТКА ПЛОТА В ТРЕКЕРЕ
 // ============================================================================
 
+// КОНСТАНТЫ
+const double MIN_SPEED_THRESHOLD = 0.001;
+const double MIN_TIME_DELTA = 0.1;
+
 void process_plot_in_tracker(const PlotData& plot, 
                              TrackManager& tracker,
                              std::map<uint64_t, int>& last_hit,
@@ -516,11 +520,12 @@ void process_plot_in_tracker(const PlotData& plot,
             double speed_km_s = track.ground_speed / 1000.0;
             double course_deg = track.course_deg;
             
-            if (speed_km_s < 0.001) {
+            // ИСПОЛЬЗУЕМ КОНСТАНТЫ
+            if (speed_km_s < MIN_SPEED_THRESHOLD) {
                 auto prev = prev_plot.find(track.id);
                 if (prev != prev_plot.end()) {
                     double dt = plot.time_sec - prev->second.time_sec;
-                    if (dt > 0.1) {
+                    if (dt > MIN_TIME_DELTA) {
                         double dx = plot.x_km - prev->second.x_km;
                         double dy = plot.y_km - prev->second.y_km;
                         double dist = sqrt(dx*dx + dy*dy);
@@ -560,6 +565,7 @@ void process_plot_in_tracker(const PlotData& plot,
         VRL_LOG_TRACE(modules::TRACKER, "Wrote " + std::to_string(tracks_written) + " tracks");
     }
 }
+
 
 // ============================================================================
 // ЗАГРУЗКА КОНФИГУРАЦИИ - ЕДИНСТВЕННОЕ ИЗМЕНЕНИЕ

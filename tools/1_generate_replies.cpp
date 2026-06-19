@@ -70,26 +70,25 @@ uint16_t corrupt_mode_c_code(uint16_t original_code) {
     return original_code ^ (1 << bit_to_flip);
 }
 
+// tools/1_generate_replies.cpp - ТОЛЬКО ИЗМЕНЕННЫЕ ФУНКЦИИ
+
+// КОНСТАНТЫ
+const int MAX_MODE_C_CODE = 4095;
+const int MAX_MODE_C_ATTEMPTS = 100;
+const double MIN_SPEED_THRESHOLD = 0.001;
+const double MIN_TIME_DELTA = 0.1;
+
 uint16_t generate_invalid_mode_c_code() {
     static std::mt19937 rng(std::random_device{}());
-    std::uniform_int_distribution<uint16_t> dist(0, 4095);
+    std::uniform_int_distribution<uint16_t> dist(0, MAX_MODE_C_CODE);
     uint16_t invalid_code;
     int attempts = 0;
     do {
         invalid_code = dist(rng);
         attempts++;
-    } while (is_valid_mode_c_code(invalid_code) && attempts < 100);
+    } while (is_valid_mode_c_code(invalid_code) && attempts < MAX_MODE_C_ATTEMPTS);
     return invalid_code;
 }
-
-struct TargetTrajectory {
-    GeneratedTarget target;
-    double start_time;
-    double end_time;
-    bool is_rbs;
-    bool mode_a_toggle;
-    bool uvd_mode_toggle;
-};
 
 void update_target_position(GeneratedTarget& target, double time_seconds, double revolution_time) {
     if (!target.use_linear_motion) return;
@@ -108,6 +107,16 @@ void update_target_position(GeneratedTarget& target, double time_seconds, double
     target.azimuth_deg = atan2(current_x_km, current_y_km) * 180.0 / M_PI;
     if (target.azimuth_deg < 0) target.azimuth_deg += 360.0;
 }
+
+struct TargetTrajectory {
+    GeneratedTarget target;
+    double start_time;
+    double end_time;
+    bool is_rbs;
+    bool mode_a_toggle;
+    bool uvd_mode_toggle;
+};
+
 
 void generate_replies(const SystemConfig& config, double duration_seconds, 
                       const std::string& output_file,
