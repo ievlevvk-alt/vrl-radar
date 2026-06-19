@@ -10,6 +10,72 @@
 #include <iomanip>
 #include <chrono>
 #include <algorithm>
+#include <memory>
+
+// ============================================================================
+// RAII-ОБЕРТКИ ДЛЯ SDL РЕСУРСОВ
+// ============================================================================
+
+struct SDLDeleter {
+    void operator()(SDL_Window* w) const { if (w) SDL_DestroyWindow(w); }
+    void operator()(SDL_Renderer* r) const { if (r) SDL_DestroyRenderer(r); }
+    void operator()(SDL_Texture* t) const { if (t) SDL_DestroyTexture(t); }
+    void operator()(SDL_Surface* s) const { if (s) SDL_FreeSurface(s); }
+    void operator()(TTF_Font* f) const { if (f) TTF_CloseFont(f); }
+};
+
+using UniqueWindow = std::unique_ptr<SDL_Window, SDLDeleter>;
+using UniqueRenderer = std::unique_ptr<SDL_Renderer, SDLDeleter>;
+using UniqueTexture = std::unique_ptr<SDL_Texture, SDLDeleter>;
+using UniqueSurface = std::unique_ptr<SDL_Surface, SDLDeleter>;
+using UniqueFont = std::unique_ptr<TTF_Font, SDLDeleter>;
+
+// Вспомогательная функция для создания текстуры из текста
+class TextureCache {
+public:
+    struct CachedTexture {
+        UniqueTexture texture;
+        int width{0};
+        int height{0};
+    };
+    
+    CachedTexture* get_or_create(SDL_Renderer* renderer, TTF_Font* font, 
+                                  const std::string& text, const SDL_Color& color) {
+        std::string key = text + "|" + std::to_string(color.r) + "," + 
+                          std::to_string(color.g) + "," + std::to_string(color.b);
+        
+        auto it = cache_.find(key);
+        if (it != cache_.end()) {
+            return &it->second;
+        }
+        
+        UniqueSurface surface(TTF_RenderText_Blended(font, text.c_str(), color));
+        if (!surface) {
+            return nullptr;
+        }
+        
+        CachedTexture cached;
+        cached.width = surface->w;
+        cached.height = surface->h;
+        cached.texture = UniqueTexture(
+            SDL_CreateTextureFromSurface(renderer, surface.get())
+        );
+        
+        if (!cached.texture) {
+            return nullptr;
+        }
+        
+        auto result = cache_.emplace(key, std::move(cached));
+        return &result.first->second;
+    }
+    
+    void clear() {
+        cache_.clear();
+    }
+    
+private:
+    std::map<std::string, CachedTexture> cache_;
+};
 
 // ============================================================================
 // ВСПОМОГАТЕЛЬНЫЕ СТРУКТУРЫ
@@ -284,7 +350,7 @@ private:
     
     double get_current_azimuth(double time);
     bool is_visible_by_beam(double object_time, double object_azimuth_deg);
-    void init_sdl();
+    bool init_sdl();
     void zoom_in();
     void zoom_out();
     void update_scale();
@@ -309,6 +375,9 @@ private:
     TTF_Font* font_{nullptr};
     bool ttf_initialized_{false};
     
+    // Кеш текстур для устранения утечек
+    TextureCache texture_cache_;
+    
     std::vector<ReplyData> replies_;
     std::vector<PlotData> plots_;
     std::vector<TrackData> tracks_;
@@ -325,14 +394,37 @@ RadarPlayer::RadarPlayer(int width, int height)
     center_x_ = width / 2;
     center_y_ = height / 2;
     scale_ = static_cast<double>(std::min(width, height) - 100) / (max_range_km_ * 1000.0 * 2);
-    init_sdl();
+    
+    if (!init_sdl()) {
+        running_ = false;
+    }
 }
 
 RadarPlayer::~RadarPlayer() {
-    if (renderer_) SDL_DestroyRenderer(renderer_);
-    if (window_) SDL_DestroyWindow(window_);
-    if (font_) TTF_CloseFont(font_);
-    if (ttf_initialized_) TTF_Quit();
+    // Очищаем кеш текстур
+    texture_cache_.clear();
+    
+    // Закрываем шрифт
+    if (font_) {
+        TTF_CloseFont(font_);
+        font_ = nullptr;
+    }
+    
+    // Уничтожаем рендерер и окно
+    if (renderer_) {
+        SDL_DestroyRenderer(renderer_);
+        renderer_ = nullptr;
+    }
+    if (window_) {
+        SDL_DestroyWindow(window_);
+        window_ = nullptr;
+    }
+    
+    // Выходим из SDL
+    if (ttf_initialized_) {
+        TTF_Quit();
+        ttf_initialized_ = false;
+    }
     SDL_Quit();
 }
 
@@ -401,10 +493,10 @@ void RadarPlayer::load_tracks(const std::string& filename) {
     }
 }
 
-void RadarPlayer::init_sdl() {
+bool RadarPlayer::init_sdl() {
     if (SDL_Init(SDL_INIT_VIDEO) < 0) {
         std::cerr << "SDL initialization failed: " << SDL_GetError() << std::endl;
-        return;
+        return false;
     }
     
     window_ = SDL_CreateWindow("Radar Player - VRL Radar", 
@@ -412,13 +504,13 @@ void RadarPlayer::init_sdl() {
                                width_, height_, SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
     if (!window_) {
         std::cerr << "Window creation failed: " << SDL_GetError() << std::endl;
-        return;
+        return false;
     }
     
     renderer_ = SDL_CreateRenderer(window_, -1, SDL_RENDERER_ACCELERATED);
     if (!renderer_) {
         std::cerr << "Renderer creation failed: " << SDL_GetError() << std::endl;
-        return;
+        return false;
     }
     
     SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
@@ -436,6 +528,8 @@ void RadarPlayer::init_sdl() {
             TTF_SetFontStyle(font_, TTF_STYLE_NORMAL);
         }
     }
+    
+    return true;
 }
 
 double RadarPlayer::get_current_azimuth(double time) {
@@ -531,7 +625,9 @@ void RadarPlayer::draw_grid() {
     SDL_SetRenderDrawColor(renderer_, 30, 30, 30, 255);
     double current_range_m = current_range_km_ * 1000.0;
     
-    // ===== РИСУЕМ КРУГИ ДАЛЬНОСТИ =====
+    SDL_Color gray_color = {80, 80, 80, 255};
+    
+    // Рисуем круги дальности
     for (int range_km = 50; range_km <= 200; range_km += 50) {
         double range_m = range_km * 1000.0;
         if (range_m > current_range_m + 0.1) break;
@@ -542,39 +638,32 @@ void RadarPlayer::draw_grid() {
         if (font_) {
             char label[16];
             snprintf(label, sizeof(label), "%d km", range_km);
-            SDL_Surface* surface = TTF_RenderText_Solid(font_, label, {80, 80, 80, 255});
-            if (surface) {
-                SDL_Texture* texture = SDL_CreateTextureFromSurface(renderer_, surface);
-                SDL_Rect rect = {center_x_ + radius - 30, center_y_ - 10, surface->w, surface->h};
-                SDL_RenderCopy(renderer_, texture, nullptr, &rect);
-                SDL_FreeSurface(surface);
-                SDL_DestroyTexture(texture);
+            
+            auto* cached = texture_cache_.get_or_create(renderer_, font_, label, gray_color);
+            if (cached && cached->texture) {
+                SDL_Rect rect = {center_x_ + radius - 30, center_y_ - 10, 
+                                 cached->width, cached->height};
+                SDL_RenderCopy(renderer_, cached->texture.get(), nullptr, &rect);
             }
         }
     }
     
-    // ===== РИСУЕМ АЗИМУТАЛЬНЫЕ ЛИНИИ =====
-    // Рисуем линии от центра до края экрана для каждого 30 градусов
+    // Рисуем азимутальные линии
     SDL_SetRenderDrawColor(renderer_, 40, 40, 40, 255);
     
-    // Начинаем линии от небольшого радиуса (чтобы не загораживать центр)
-    double start_range_m = std::min(10000.0, current_range_m * 0.05); // 10 км или 5% от дальности
+    double start_range_m = std::min(10000.0, current_range_m * 0.05);
     int start_radius = static_cast<int>(start_range_m * scale_);
     
     for (int az = 0; az < 360; az += 30) {
         double rad = az * M_PI / 180.0;
         
-        // Начальная точка (близко к центру)
         int x_start = center_x_ + static_cast<int>(start_radius * sin(rad));
         int y_start = center_y_ - static_cast<int>(start_radius * cos(rad));
-        
-        // Конечная точка (на границе дальности)
         int x_end = center_x_ + static_cast<int>(current_range_m * scale_ * sin(rad));
         int y_end = center_y_ - static_cast<int>(current_range_m * scale_ * cos(rad));
         
         SDL_RenderDrawLine(renderer_, x_start, y_start, x_end, y_end);
         
-        // ===== ПОДПИСИ АЗИМУТОВ =====
         if (font_) {
             char label[8];
             if (az == 0) snprintf(label, sizeof(label), "N");
@@ -583,15 +672,11 @@ void RadarPlayer::draw_grid() {
             else if (az == 270) snprintf(label, sizeof(label), "W");
             else snprintf(label, sizeof(label), "%d°", az);
             
-            SDL_Surface* surface = TTF_RenderText_Solid(font_, label, {80, 80, 80, 255});
-            if (surface) {
-                SDL_Texture* texture = SDL_CreateTextureFromSurface(renderer_, surface);
-                
-                // Позиционируем подпись на конце линии
+            auto* cached = texture_cache_.get_or_create(renderer_, font_, label, gray_color);
+            if (cached && cached->texture) {
                 int x_label = x_end - 15;
                 int y_label = y_end - 10;
                 
-                // Корректируем позицию для разных направлений
                 if (az == 0) { 
                     x_label = x_end - 8; 
                     y_label = y_end - 25; 
@@ -606,21 +691,18 @@ void RadarPlayer::draw_grid() {
                     y_label = y_end - 8; 
                 }
                 
-                // Убеждаемся, что подпись не выходит за экран
                 if (x_label < 0) x_label = 0;
-                if (x_label + surface->w > width_) x_label = width_ - surface->w;
+                if (x_label + cached->width > width_) x_label = width_ - cached->width;
                 if (y_label < 0) y_label = 0;
-                if (y_label + surface->h > height_) y_label = height_ - surface->h;
+                if (y_label + cached->height > height_) y_label = height_ - cached->height;
                 
-                SDL_Rect rect = {x_label, y_label, surface->w, surface->h};
-                SDL_RenderCopy(renderer_, texture, nullptr, &rect);
-                SDL_FreeSurface(surface);
-                SDL_DestroyTexture(texture);
+                SDL_Rect rect = {x_label, y_label, cached->width, cached->height};
+                SDL_RenderCopy(renderer_, cached->texture.get(), nullptr, &rect);
             }
         }
     }
     
-    // ===== РИСУЕМ ЦЕНТР (крест) =====
+    // Рисуем центр
     SDL_SetRenderDrawColor(renderer_, 200, 200, 200, 255);
     int cross_size = 12;
     SDL_RenderDrawLine(renderer_, center_x_ - cross_size, center_y_, 
@@ -628,7 +710,6 @@ void RadarPlayer::draw_grid() {
     SDL_RenderDrawLine(renderer_, center_x_, center_y_ - cross_size,
                        center_x_, center_y_ + cross_size);
 }
-
 
 void RadarPlayer::draw_replies_at_time(double time) {
     if (!show_replies_) return;
@@ -856,25 +937,23 @@ void RadarPlayer::draw_track_label(int x, int y, const TrackLabel& label) {
         lines.push_back(line);
     }
     
-    int max_width = 0;
-    int line_height = 18;
-    std::vector<SDL_Surface*> surfaces;
-    std::vector<SDL_Texture*> textures;
-    
     SDL_Color color = (label.type == "RBS") ? 
         SDL_Color{0, 255, 0, 255} : SDL_Color{0, 255, 255, 255};
     
+    // Создаем текстуры через кеш
+    std::vector<TextureCache::CachedTexture*> cached_textures;
+    int max_width = 0;
+    int line_height = 18;
+    
     for (const auto& l : lines) {
-        SDL_Surface* surface = TTF_RenderText_Solid(font_, l.c_str(), color);
-        if (surface) {
-            max_width = std::max(max_width, surface->w);
-            surfaces.push_back(surface);
-            SDL_Texture* texture = SDL_CreateTextureFromSurface(renderer_, surface);
-            textures.push_back(texture);
+        auto* cached = texture_cache_.get_or_create(renderer_, font_, l, color);
+        if (cached && cached->texture) {
+            cached_textures.push_back(cached);
+            max_width = std::max(max_width, cached->width);
         }
     }
     
-    if (surfaces.empty()) return;
+    if (cached_textures.empty()) return;
     
     int padding = 8;
     int total_height = lines.size() * line_height + padding * 2;
@@ -899,14 +978,11 @@ void RadarPlayer::draw_track_label(int x, int y, const TrackLabel& label) {
     SDL_SetRenderDrawColor(renderer_, color.r, color.g, color.b, 100);
     SDL_RenderDrawRect(renderer_, &bg_rect);
     
-    for (size_t i = 0; i < surfaces.size(); ++i) {
+    for (size_t i = 0; i < cached_textures.size(); ++i) {
         SDL_Rect rect = {label_x, static_cast<int>(label_y + i * line_height), 
-                         surfaces[i]->w, surfaces[i]->h};
-        SDL_RenderCopy(renderer_, textures[i], nullptr, &rect);
+                         cached_textures[i]->width, cached_textures[i]->height};
+        SDL_RenderCopy(renderer_, cached_textures[i]->texture.get(), nullptr, &rect);
     }
-    
-    for (auto surface : surfaces) SDL_FreeSurface(surface);
-    for (auto texture : textures) SDL_DestroyTexture(texture);
 }
 
 void RadarPlayer::draw_scan_line(double time) {
@@ -944,24 +1020,20 @@ void RadarPlayer::draw_info() {
              replies_.size(), plots_.size(), track_history_.size(),
              get_current_azimuth(current_time_));
     
-    SDL_Surface* surface = TTF_RenderText_Solid(font_, info, {200, 200, 200, 255});
-    if (surface) {
-        SDL_Texture* texture = SDL_CreateTextureFromSurface(renderer_, surface);
-        SDL_Rect rect = {10, 10, surface->w, surface->h};
-        SDL_RenderCopy(renderer_, texture, nullptr, &rect);
-        SDL_FreeSurface(surface);
-        SDL_DestroyTexture(texture);
+    SDL_Color color = {200, 200, 200, 255};
+    auto* cached = texture_cache_.get_or_create(renderer_, font_, info, color);
+    if (cached && cached->texture) {
+        SDL_Rect rect = {10, 10, cached->width, cached->height};
+        SDL_RenderCopy(renderer_, cached->texture.get(), nullptr, &rect);
     }
     
     const char* help = "SPACE: Pause | UP/DOWN: Speed | 1:Replies 2:Plots 3:Tracks | "
                        "R:Reset | Wheel:Zoom | ESC:Exit";
-    surface = TTF_RenderText_Solid(font_, help, {150, 150, 150, 255});
-    if (surface) {
-        SDL_Texture* texture = SDL_CreateTextureFromSurface(renderer_, surface);
-        SDL_Rect rect = {10, height_ - 30, surface->w, surface->h};
-        SDL_RenderCopy(renderer_, texture, nullptr, &rect);
-        SDL_FreeSurface(surface);
-        SDL_DestroyTexture(texture);
+    auto* cached_help = texture_cache_.get_or_create(renderer_, font_, help, 
+                                                      SDL_Color{150, 150, 150, 255});
+    if (cached_help && cached_help->texture) {
+        SDL_Rect rect = {10, height_ - 30, cached_help->width, cached_help->height};
+        SDL_RenderCopy(renderer_, cached_help->texture.get(), nullptr, &rect);
     }
 }
 
