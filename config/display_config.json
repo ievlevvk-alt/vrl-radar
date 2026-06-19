@@ -1,0 +1,17 @@
+{
+    "display": {
+        "beamwidth_deg": 3.0,
+        "default_range_km": 200.0,
+        "min_range_km": 10.0,
+        "max_range_km": 500.0,
+        "window_width": 1280,
+        "window_height": 960,
+        "font_size": 14,
+        "show_replies": true,
+        "show_plots": true,
+        "show_tracks": true,
+        "lookahead_time": 0.3,
+        "range_rings": [50, 100, 150, 200],
+        "azimuth_lines": [0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330]
+    }
+}

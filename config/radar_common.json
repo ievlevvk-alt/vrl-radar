@@ -1,0 +1,14 @@
+{
+    "beamwidth_deg": 5.0,
+    "revolution_time": 5.0,
+    "azimuth": {
+        "azimuth_bins": 4096
+    },
+    "radar": {
+        "range_bin_rbs": 30.0,
+        "range_bin_uvd": 60.0,
+        "max_azimuth_diff_for_overlap": 2.0,
+        "max_range_diff_for_overlap": 10,
+        "min_amplitude": 10
+    }
+}

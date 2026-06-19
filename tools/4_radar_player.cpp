@@ -365,6 +365,7 @@ private:
     double max_time_;
     double revolution_time_;
     double lookahead_time_;
+    double display_beamwidth_deg_;
     bool running_;
     bool show_replies_;
     bool show_plots_;
@@ -388,7 +389,8 @@ RadarPlayer::RadarPlayer(int width, int height)
     : width_(width), height_(height), running_(true),
       max_range_km_(200.0), current_range_km_(200.0),
       play_speed_(1.0), current_time_(0.0), max_time_(0.0),
-      revolution_time_(5.0), show_replies_(true), show_plots_(true), show_tracks_(true),
+      revolution_time_(5.0), display_beamwidth_deg_(3.0),
+      show_replies_(true), show_plots_(true), show_tracks_(true),
       lookahead_time_(0.3) {
     
     center_x_ = width / 2;
@@ -537,9 +539,6 @@ double RadarPlayer::get_current_azimuth(double time) {
     return progress * 360.0;
 }
 
-// КОНСТАНТА
-const double DISPLAY_BEAMWIDTH_DEG = 3.0;
-
 bool RadarPlayer::is_visible_by_beam(double object_time, double object_azimuth_deg) {
     double time_offset = object_time - current_time_;
     if (time_offset > lookahead_time_) return false;
@@ -549,7 +548,7 @@ bool RadarPlayer::is_visible_by_beam(double object_time, double object_azimuth_d
     double az_diff = std::abs(object_azimuth_deg - beam_azimuth);
     az_diff = std::min(az_diff, 360.0 - az_diff);
     
-    return az_diff < DISPLAY_BEAMWIDTH_DEG;
+    return az_diff < display_beamwidth_deg_;
 }
 
 void RadarPlayer::render() {

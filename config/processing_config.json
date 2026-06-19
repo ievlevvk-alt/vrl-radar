@@ -1,0 +1,29 @@
+{
+    "processing": {
+        "max_gap_azimuth": 8,
+        "range_window": 30,
+        "range_tolerance": 5,
+        "min_hits": 2,
+        "output_file": "targets.txt",
+        "plots_output_file": "plots_combined.txt",
+        "min_cluster_hits": 2,
+        "range_threshold_bins": 5,
+        "azimuth_threshold_bins": 3,
+        "completion_gap_bins": 8,
+        "min_confidence": 0.3,
+        "garbled_confidence_threshold": 0.5,
+        "min_uvd_confidence": 0.3,
+        "uvd_garbled_threshold": 0.5
+    },
+    "tracker": {
+        "debug_mode": false,
+        "enable_rbs_tracking": true,
+        "enable_uvd_tracking": true,
+        "max_coast_count": 10,
+        "max_gate_azimuth": 30.0,
+        "max_gate_distance": 3000.0,
+        "measurement_noise": 0.1,
+        "min_hits_to_confirm": 3,
+        "process_noise": 0.5
+    }
+}

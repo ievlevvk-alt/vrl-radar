@@ -1,0 +1,23 @@
+{
+    "rbs_targets": [
+        {
+            "name": "Target_RBS_1234",
+            "azimuth_deg": 45.0,
+            "range_km": 100.0,
+            "rbs_code_octal": 668,
+            "spi": false,
+            "enabled": true,
+            "update_every_n_revolutions": 1,
+            "revolution_offset": 0,
+            "altitude_meters": 9600,
+            "enable_altitude": true,
+            "alternate_code_altitude": true,
+            "alternate_data_altitude": false,
+            "use_linear_motion": true,
+            "speed_m_per_s": 200.0,
+            "course_deg": 225.0,
+            "initial_x_km": 75.0,
+            "initial_y_km": 129.9
+        }
+    ]
+}

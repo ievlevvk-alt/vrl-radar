@@ -1,0 +1,15 @@
+{
+    "confidence": {
+        "initial_track_confidence": 0.1,
+        "coast_confidence_decay": 0.05,
+        "min_track_confidence": 0.0,
+        "max_track_confidence": 1.0,
+        "confidence_rbs_weight_framing": 0.3,
+        "confidence_rbs_weight_snr": 0.3,
+        "confidence_rbs_weight_stability": 0.2,
+        "confidence_rbs_weight_errors": 0.2,
+        "confidence_uvd_weight_snr": 0.5,
+        "confidence_uvd_weight_errors": 0.3,
+        "confidence_uvd_weight_stability": 0.2
+    }
+}

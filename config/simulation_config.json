@@ -1,0 +1,25 @@
+{
+    "rbs": {
+        "snr_db": 20.0,
+        "amp_variation": 0.1,
+        "f1f2_amp_ratio": 1.0
+    },
+    "uvd": {
+        "snr_db": 20.0,
+        "error_probability": 0.01
+    },
+    "sls": {
+        "enabled": false,
+        "main_to_sls_ratio": 1.0,
+        "sidelobe_probability": 0.1,
+        "sls_attenuation_db": 20.0
+    },
+    "simulator_constants": {
+        "base_signal_power": 128.0,
+        "amp_variation_min": 0.5,
+        "amp_variation_max": 1.5,
+        "uvd_error_threshold": 50.0,
+        "max_snr_db": 30.0,
+        "min_amplitude_ratio_for_separation": 0.3
+    }
+}

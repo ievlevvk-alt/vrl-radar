@@ -1,0 +1,22 @@
+{
+    "uvd_targets": [
+        {
+            "name": "Target_UVD_Moving",
+            "azimuth_deg": 45.0,
+            "range_km": 20.0,
+            "uvd_data_dec": 12345,
+            "enabled": true,
+            "update_every_n_revolutions": 1,
+            "revolution_offset": 0,
+            "altitude_meters": 3000,
+            "enable_altitude": true,
+            "alternate_code_altitude": false,
+            "alternate_data_altitude": true,
+            "use_linear_motion": true,
+            "speed_m_per_s": 100.0,
+            "course_deg": 45.0,
+            "initial_x_km": 14.14,
+            "initial_y_km": 14.14
+        }
+    ]
+}

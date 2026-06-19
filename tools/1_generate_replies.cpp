@@ -70,16 +70,12 @@ uint16_t corrupt_mode_c_code(uint16_t original_code) {
     return original_code ^ (1 << bit_to_flip);
 }
 
-// tools/1_generate_replies.cpp - ТОЛЬКО ИЗМЕНЕННЫЕ ФУНКЦИИ
-
-// КОНСТАНТЫ
-const int MAX_MODE_C_CODE = 4095;
-const int MAX_MODE_C_ATTEMPTS = 100;
-const double MIN_SPEED_THRESHOLD = 0.001;
-const double MIN_TIME_DELTA = 0.1;
-
 uint16_t generate_invalid_mode_c_code() {
     static std::mt19937 rng(std::random_device{}());
+    // Используем константу из конфигурации, но пока оставляем значение по умолчанию
+    const int MAX_MODE_C_CODE = 4095;
+    const int MAX_MODE_C_ATTEMPTS = 100;
+    
     std::uniform_int_distribution<uint16_t> dist(0, MAX_MODE_C_CODE);
     uint16_t invalid_code;
     int attempts = 0;
@@ -89,6 +85,15 @@ uint16_t generate_invalid_mode_c_code() {
     } while (is_valid_mode_c_code(invalid_code) && attempts < MAX_MODE_C_ATTEMPTS);
     return invalid_code;
 }
+
+struct TargetTrajectory {
+    GeneratedTarget target;
+    double start_time;
+    double end_time;
+    bool is_rbs;
+    bool mode_a_toggle;
+    bool uvd_mode_toggle;
+};
 
 void update_target_position(GeneratedTarget& target, double time_seconds, double revolution_time) {
     if (!target.use_linear_motion) return;
@@ -107,16 +112,6 @@ void update_target_position(GeneratedTarget& target, double time_seconds, double
     target.azimuth_deg = atan2(current_x_km, current_y_km) * 180.0 / M_PI;
     if (target.azimuth_deg < 0) target.azimuth_deg += 360.0;
 }
-
-struct TargetTrajectory {
-    GeneratedTarget target;
-    double start_time;
-    double end_time;
-    bool is_rbs;
-    bool mode_a_toggle;
-    bool uvd_mode_toggle;
-};
-
 
 void generate_replies(const SystemConfig& config, double duration_seconds, 
                       const std::string& output_file,
@@ -147,8 +142,8 @@ void generate_replies(const SystemConfig& config, double duration_seconds,
     sim_config.sls.sidelobe_probability = 0.1;
     ReplySimulator simulator(sim_config);
 
-    const double REVOLUTION_TIME = 5.0;
-    const int AZIMUTH_STEPS = 4096;
+    const double REVOLUTION_TIME = config.revolution_time;
+    const int AZIMUTH_STEPS = config.azimuth.azimuth_bins;
     const double TIME_STEP = REVOLUTION_TIME / AZIMUTH_STEPS;
 
     std::vector<TargetTrajectory> trajectories;
@@ -226,7 +221,7 @@ void generate_replies(const SystemConfig& config, double duration_seconds,
         double time_sec = step * TIME_STEP;
         uint16_t azimuth = step % AZIMUTH_STEPS;
 
-        if (!first && azimuth < prev_azimuth && (prev_azimuth - azimuth) > 2048) {
+        if (!first && azimuth < prev_azimuth && (prev_azimuth - azimuth) > config.azimuth.azimuth_half) {
             out << std::fixed << std::setprecision(6) << time_sec << ",0,0,NORTH,0,0,0,0,0,0\n";
         }
         first = false;
@@ -244,7 +239,7 @@ void generate_replies(const SystemConfig& config, double duration_seconds,
             update_target_position(target, time_sec, REVOLUTION_TIME);
             
             double half_beamwidth = config.beamwidth_deg / 2.0;
-            double current_az_deg = azimuth * RadarConfig::azimuth_per_bin;
+            double current_az_deg = azimuth * config.azimuth.azimuth_per_bin_deg;
             double az_diff = std::abs(target.azimuth_deg - current_az_deg);
             az_diff = std::min(az_diff, 360.0 - az_diff);
             
@@ -395,7 +390,7 @@ int main(int argc, char* argv[]) {
     
     VRL_LOG_INFO(modules::MAIN, "=== Step 1: Generate Replies ===");
     
-    std::string config_file = "../config/radar.conf";
+    std::string config_file = "../config/radar.json";
     double duration_seconds = 300.0;
     std::string output_file = "replies.txt";
     double mode_a_error_prob = 0.5;
@@ -415,7 +410,7 @@ int main(int argc, char* argv[]) {
 
     ConfigLoader loader;
     SystemConfig config;
-    if (!loader.load("../config/radar.json", config)) {
+    if (!loader.load(config_file, config)) {
         VRL_LOG_ERROR(modules::MAIN, "Cannot load config file: " + config_file);
         return 1;
     }

@@ -1,0 +1,33 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "VRL-Radar Configuration Schema",
+    "description": "Schema for VRL-Radar configuration files",
+    "type": "object",
+    "properties": {
+        "_comment": { "type": "string" },
+        "_includes": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "List of JSON files to include"
+        },
+        "beamwidth_deg": { "type": "number" },
+        "revolution_time": { "type": "number" },
+        "azimuth": {
+            "type": "object",
+            "properties": {
+                "azimuth_bins": { "type": "integer" }
+            }
+        },
+        "radar": { "type": "object" },
+        "rbs": { "type": "object" },
+        "uvd": { "type": "object" },
+        "sls": { "type": "object" },
+        "tracker": { "type": "object" },
+        "processing": { "type": "object" },
+        "confidence": { "type": "object" },
+        "simulator_constants": { "type": "object" },
+        "rbs_targets": { "type": "array" },
+        "uvd_targets": { "type": "array" },
+        "display": { "type": "object" }
+    }
+}
