@@ -11,7 +11,7 @@
 #include "uvd_processor.h"
 #include "i_clusterer.h"
 #include "legacy_clusterer.h"
-#include "dbscan_clusterer.h"  // <-- ДОБАВЛЯЕМ
+#include "dbscan_clusterer.h"
 #include <vector>
 #include <map>
 #include <set>
@@ -71,10 +71,16 @@ struct TargetCluster {
 
 class ClusterTracker {
 public:
+    // Существующие конструкторы
     ClusterTracker(int max_gap_azimuth = 8, int range_window = 30);
     explicit ClusterTracker(std::unique_ptr<IClusterer> clusterer);
+    
+    // НОВЫЙ КОНСТРУКТОР с конфигурацией
+    explicit ClusterTracker(const ClustererConfig& config);
+    
     ~ClusterTracker() = default;
     
+    // Основные методы
     void process_scan(const ScanReplies& scan);
     std::vector<TargetCluster> get_completed_clusters();
     const std::vector<TargetCluster>& get_active_clusters() const;
@@ -83,16 +89,22 @@ public:
     IClusterer* get_clusterer() const { return clusterer_.get(); }
     std::string get_algorithm_name() const;
     
-    void set_max_revolutions_no_update(uint32_t max) { max_revolutions_no_update_ = max; }
-    uint32_t get_max_revolutions_no_update() const { return max_revolutions_no_update_; }
-    void set_max_active_clusters(size_t max) { max_active_clusters_ = max; }
-    size_t get_max_active_clusters() const { return max_active_clusters_; }
+    // НОВЫЕ МЕТОДЫ для работы с конфигурацией
+    void update_config(const ClustererConfig& config);
+    const ClustererConfig& get_config() const { return config_; }
+    
+    // Управление кластерами
+    void set_max_revolutions_no_update(uint32_t max);
+    uint32_t get_max_revolutions_no_update() const { return config_.max_revolutions_no_update; }
+    void set_max_active_clusters(size_t max) { config_.max_active_clusters = max; }
+    size_t get_max_active_clusters() const { return config_.max_active_clusters; }
     size_t cleanup_stale_clusters(uint32_t current_revolution);
     
+    // Настройка параметров (для обратной совместимости)
     void set_max_gap_azimuth(int gap);
     void set_range_window(int window);
     
-    // НОВЫЙ МЕТОД: установка алгоритма кластеризации
+    // Выбор алгоритма
     enum class ClustererType {
         LEGACY,    // Существующий алгоритм
         DBSCAN     // DBSCAN алгоритм
@@ -102,6 +114,7 @@ public:
     ClustererType get_clusterer_type() const { return clusterer_type_; }
     std::string get_clusterer_type_name() const;
     
+    // Статистика
     struct ClusterStats {
         size_t active_count{0};
         size_t completed_count{0};
@@ -114,13 +127,13 @@ public:
     ClusterStats get_stats() const;
     
 private:
-    std::unique_ptr<IClusterer> create_clusterer(ClustererType type);
+    // Метод для создания кластеризатора из конфигурации
+    std::unique_ptr<IClusterer> create_clusterer(const ClustererConfig& config);
     
     std::unique_ptr<IClusterer> clusterer_;
-    ClustererType clusterer_type_{ClustererType::LEGACY};
+    ClustererConfig config_;                     // <-- НОВОЕ ПОЛЕ
+    ClustererType clusterer_type_{ClustererType::DBSCAN};  // По умолчанию DBSCAN
     
-    uint32_t max_revolutions_no_update_{5};
-    size_t max_active_clusters_{100};
     uint32_t current_revolution_{0};
     mutable size_t total_clusters_cleaned_{0};
     mutable size_t cached_completed_count_{0};

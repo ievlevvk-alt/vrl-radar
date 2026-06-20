@@ -1,6 +1,4 @@
 // src/processing/cluster.cpp
-// Полный исправленный файл
-
 #include "vrl/radar/processing/cluster.h"
 #include "vrl/radar/utils/utils.h"
 #include "vrl/radar/utils/logger.h"
@@ -178,45 +176,129 @@ size_t TargetCluster::reply_scans_count() const {
 // CLUSTER TRACKER IMPLEMENTATION
 // ============================================================================
 
-ClusterTracker::ClusterTracker(int max_gap_azimuth, int range_window)
-    : clusterer_(create_clusterer(clusterer_type_)) {
-    if (clusterer_) {
-        clusterer_->set_param("max_gap_azimuth", max_gap_azimuth);
-        clusterer_->set_param("range_window", range_window);
-    }
+// ============================================================================
+// НОВЫЙ КОНСТРУКТОР С КОНФИГУРАЦИЕЙ
+// ============================================================================
+
+ClusterTracker::ClusterTracker(const ClustererConfig& config)
+    : config_(config) {
+    clusterer_ = create_clusterer(config);
+    clusterer_type_ = (config.type == ClustererConfig::Type::DBSCAN) ? 
+                       ClustererType::DBSCAN : ClustererType::LEGACY;
+    VRL_LOG_INFO(modules::CLUSTER, "ClusterTracker initialized with config: " +
+                 get_clusterer_type_name() + 
+                 ", max_revolutions=" + std::to_string(config.max_revolutions_no_update) +
+                 ", max_active=" + std::to_string(config.max_active_clusters));
+}
+
+// ============================================================================
+// СУЩЕСТВУЮЩИЙ КОНСТРУКТОР (обновлен)
+// ============================================================================
+
+ClusterTracker::ClusterTracker(int max_gap_azimuth, int range_window) {
+    config_.type = ClustererConfig::Type::LEGACY;
+    config_.max_gap_azimuth = max_gap_azimuth;
+    config_.range_window = range_window;
+    config_.max_revolutions_no_update = 5;
+    config_.max_active_clusters = 100;
+    
+    clusterer_ = create_clusterer(config_);
+    clusterer_type_ = ClustererType::LEGACY;
+    
     VRL_LOG_INFO(modules::CLUSTER, "ClusterTracker initialized with " + 
                  get_clusterer_type_name() + ": gap=" + std::to_string(max_gap_azimuth) + 
                  ", window=" + std::to_string(range_window));
 }
 
+// ============================================================================
+// КОНСТРУКТОР С КАСТОМНЫМ КЛАСТЕРИЗАТОРОМ
+// ============================================================================
+
 ClusterTracker::ClusterTracker(std::unique_ptr<IClusterer> clusterer)
     : clusterer_(std::move(clusterer)) {
+    config_.type = ClustererConfig::Type::LEGACY;
+    config_.max_revolutions_no_update = 5;
+    config_.max_active_clusters = 100;
+    clusterer_type_ = ClustererType::LEGACY;
     VRL_LOG_INFO(modules::CLUSTER, "ClusterTracker initialized with custom clusterer: " + 
                  (clusterer_ ? clusterer_->get_name() : "null"));
 }
 
-std::unique_ptr<IClusterer> ClusterTracker::create_clusterer(ClustererType type) {
-    switch (type) {
-        case ClustererType::DBSCAN:
-            VRL_LOG_DEBUG(modules::CLUSTER, "Creating DBSCANClusterer");
-            // ИСПРАВЛЕНО: передаем правильные параметры
-            // RadarConfig{}, 3, 2, 1.2
-            return std::make_unique<DBSCANClusterer>(
-                RadarConfig{},  // Конфигурация по умолчанию
-                3,              // max_range_gap
-                2,              // min_points
-                1.2             // azimuth_gap_coefficient
+// ============================================================================
+// СОЗДАНИЕ КЛАСТЕРИЗАТОРА ИЗ КОНФИГУРАЦИИ
+// ============================================================================
+
+// src/processing/cluster.cpp
+// Замените метод create_clusterer на этот:
+
+std::unique_ptr<IClusterer> ClusterTracker::create_clusterer(const ClustererConfig& config) {
+    switch (config.type) {
+        case ClustererConfig::Type::DBSCAN: {
+            std::string msg = "Creating DBSCANClusterer with config: range_gap=" + 
+                              std::to_string(config.max_range_gap) +
+                              ", min_points=" + std::to_string(config.min_points) +
+                              ", azimuth_coeff=" + std::to_string(config.azimuth_gap_coefficient);
+            VRL_LOG_DEBUG(modules::CLUSTER, msg);
+            
+            // Создаем RadarConfig с параметрами по умолчанию
+            RadarConfig radar_config;
+            radar_config.beamwidth_deg = 5.0;  // TODO: брать из общей конфигурации
+            
+            auto clusterer = std::make_unique<DBSCANClusterer>(
+                radar_config,
+                config.max_range_gap,
+                config.min_points,
+                config.azimuth_gap_coefficient
             );
-        case ClustererType::LEGACY:
-        default:
-            VRL_LOG_DEBUG(modules::CLUSTER, "Creating LegacyClusterer");
-            return std::make_unique<LegacyClusterer>(8, 30);
+            
+            return clusterer;
+        }
+        
+        case ClustererConfig::Type::LEGACY:
+        default: {
+            std::string msg = "Creating LegacyClusterer: gap=" + 
+                              std::to_string(config.max_gap_azimuth) +
+                              ", window=" + std::to_string(config.range_window);
+            VRL_LOG_DEBUG(modules::CLUSTER, msg);
+            
+            return std::make_unique<LegacyClusterer>(
+                config.max_gap_azimuth,
+                config.range_window
+            );
+        }
     }
 }
 
+// ============================================================================
+// ОБНОВЛЕНИЕ КОНФИГУРАЦИИ
+// ============================================================================
+
+void ClusterTracker::update_config(const ClustererConfig& config) {
+    config_ = config;
+    clusterer_ = create_clusterer(config);
+    clusterer_type_ = (config.type == ClustererConfig::Type::DBSCAN) ? 
+                       ClustererType::DBSCAN : ClustererType::LEGACY;
+    VRL_LOG_INFO(modules::CLUSTER, "Clusterer config updated to: " + get_clusterer_type_name());
+}
+
+// ============================================================================
+// ВЫБОР АЛГОРИТМА (для обратной совместимости)
+// ============================================================================
+
 void ClusterTracker::set_clusterer_type(ClustererType type) {
     clusterer_type_ = type;
-    clusterer_ = create_clusterer(type);
+    
+    switch (type) {
+        case ClustererType::DBSCAN:
+            config_.type = ClustererConfig::Type::DBSCAN;
+            break;
+        case ClustererType::LEGACY:
+        default:
+            config_.type = ClustererConfig::Type::LEGACY;
+            break;
+    }
+    
+    clusterer_ = create_clusterer(config_);
     VRL_LOG_INFO(modules::CLUSTER, "Clusterer changed to: " + get_clusterer_type_name());
 }
 
@@ -227,6 +309,33 @@ std::string ClusterTracker::get_clusterer_type_name() const {
         default: return "LegacyClusterer";
     }
 }
+
+// ============================================================================
+// УСТАНОВКА ПАРАМЕТРОВ (для обратной совместимости)
+// ============================================================================
+
+void ClusterTracker::set_max_gap_azimuth(int gap) {
+    if (clusterer_) {
+        clusterer_->set_param("max_gap_azimuth", gap);
+    }
+}
+
+void ClusterTracker::set_range_window(int window) {
+    if (clusterer_) {
+        clusterer_->set_param("range_window", window);
+    }
+}
+
+void ClusterTracker::set_max_revolutions_no_update(uint32_t max) {
+    config_.max_revolutions_no_update = max;
+    if (clusterer_) {
+        clusterer_->set_param("max_revolutions_no_update", static_cast<int>(max));
+    }
+}
+
+// ============================================================================
+// ОСНОВНЫЕ МЕТОДЫ
+// ============================================================================
 
 void ClusterTracker::process_scan(const ScanReplies& scan) {
     if (!clusterer_) {
@@ -239,10 +348,10 @@ void ClusterTracker::process_scan(const ScanReplies& scan) {
     
     // Проверка на превышение лимита активных кластеров
     const auto& active = clusterer_->get_active_clusters();
-    if (active.size() > max_active_clusters_) {
+    if (active.size() > config_.max_active_clusters) {
         VRL_LOG_WARN(modules::CLUSTER, "Too many active clusters (" + 
                      std::to_string(active.size()) + " > " + 
-                     std::to_string(max_active_clusters_) + "), forcing cleanup");
+                     std::to_string(config_.max_active_clusters) + "), forcing cleanup");
         cleanup_stale_clusters(current_revolution_);
     }
 }
@@ -289,18 +398,6 @@ std::string ClusterTracker::get_algorithm_name() const {
         return clusterer_->get_name();
     }
     return "none";
-}
-
-void ClusterTracker::set_max_gap_azimuth(int gap) {
-    if (clusterer_) {
-        clusterer_->set_param("max_gap_azimuth", gap);
-    }
-}
-
-void ClusterTracker::set_range_window(int window) {
-    if (clusterer_) {
-        clusterer_->set_param("range_window", window);
-    }
 }
 
 size_t ClusterTracker::cleanup_stale_clusters(uint32_t current_revolution) {

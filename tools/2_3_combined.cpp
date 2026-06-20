@@ -1,844 +1,721 @@
 // tools/2_3_combined.cpp
-#include "vrl/radar/processing/tracker.h"
-#include "vrl/radar/core/config.h"
-#include "vrl/radar/core/config_loader.hpp"
-#include "vrl/radar/utils/logger.h"
+// Combined tool for:
+// 2. Reply processing with clustering
+// 3. Target tracking with Kalman filter
+
 #include <iostream>
 #include <fstream>
 #include <vector>
-#include <map>
+#include <string>
 #include <cmath>
-#include <sstream>
+#include <chrono>
+#include <thread>
+#include <atomic>
+#include <mutex>
+#include <queue>
+#include <condition_variable>
 #include <iomanip>
+#include <sstream>
 #include <algorithm>
-#include <set>
+#include <memory>
+#include <cstring>
+#include <signal.h>
+
+#include "vrl/radar/core/config.h"
+#include "vrl/radar/core/config_loader.hpp"
+#include "vrl/radar/core/replies.h"
+#include "vrl/radar/core/object_pool.hpp"
+#include "vrl/radar/processing/cluster.h"
+#include "vrl/radar/processing/dbscan_clusterer.h"
+#include "vrl/radar/processing/tracker.h"
+#include "vrl/radar/simulation/simulator.h"
+#include "vrl/radar/utils/logger.h"
+#include "vrl/radar/utils/utils.h"
 
 using namespace vrl::radar;
 using namespace vrl::radar::utils;
 
-// Константы для преобразования
-constexpr double AZIMUTH_BIN_DEG = 360.0 / 4096.0;
-
 // ============================================================================
-// СТРУКТУРЫ ДАННЫХ
+// КОНСТАНТЫ
 // ============================================================================
 
-struct Reply {
-    double time_sec;
-    uint16_t azimuth;
-    uint16_t range;
-    std::string type;
-    uint32_t code_data;
-    int altitude;
-    bool spi;
-    uint8_t sls_ratio;
-    bool is_valid;
-    bool is_garble;
-    double x;
-    double y;
+constexpr int AZIMUTH_BINS = 4096;
+constexpr double DEG_TO_BIN = AZIMUTH_BINS / 360.0;
+
+// ============================================================================
+// КОНФИГУРАЦИЯ
+// ============================================================================
+
+struct CombinedConfig {
+    // Входные данные
+    std::string input_file{""};
+    std::string config_file{"../config/radar.json"};
+    std::string output_file{"targets.txt"};
+    std::string plots_output_file{""};
+    
+    // Режимы
+    bool real_time{true};
+    bool save_plots{false};
+    bool verbose{false};
+    bool debug{false};
+    
+    // Параметры обработки
+    int max_gap_azimuth{8};
+    int range_window{30};
+    int min_hits{2};
+    int min_cluster_hits{2};
+    double min_confidence{0.3};
+    
+    // Параметры трекера
+    int min_hits_to_confirm{3};
+    int max_coast_count{5};
+    double max_gate_distance{150.0};
+    double max_gate_azimuth{30.0};
+    
+    // ========================================================================
+    // ПАРАМЕТРЫ КЛАСТЕРИЗАЦИИ
+    // ========================================================================
+    
+    // Тип кластеризатора: "dbscan" или "legacy"
+    std::string clusterer_type{"dbscan"};
+    
+    // Параметры для DBSCAN
+    int dbscan_max_range_gap{3};
+    int dbscan_min_points{2};
+    double dbscan_azimuth_gap_coefficient{1.2};
+    
+    // Параметры для Legacy
+    int legacy_max_gap_azimuth{8};
+    int legacy_range_window{30};
 };
 
-struct PlotData {
-    double time_sec;
-    double azimuth_deg;
-    double range_km;
-    double x_km;
-    double y_km;
-    std::string type;
-    uint32_t code_data;
-    int altitude;
-    bool altitude_valid;
-    int altitude_attempts;
-    bool spi;
-    int reply_count;
-    int garble_count;
-    double azimuth_span_deg;
-    double range_span_km;
-    double first_reply_time;
-    double last_reply_time;
-};
-
 // ============================================================================
-// ФОРМАТИРОВАНИЕ КОДА
+// ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ
 // ============================================================================
 
-std::string format_code(uint32_t code, const std::string& type) {
-    if (type == "RBS" || type == "RBS_A" || type == "RBS_C") {
-        std::stringstream ss;
-        ss << std::oct << code;
-        std::string result = ss.str();
-        while (result.length() < 4) result = "0" + result;
-        return "0" + result;
-    } else {
-        return std::to_string(code);
-    }
+static std::atomic<bool> g_running{true};
+static std::mutex g_output_mutex;
+
+// ============================================================================
+// ОБРАБОТЧИК СИГНАЛОВ
+// ============================================================================
+
+void signal_handler(int sig) {
+    (void)sig;
+    VRL_LOG_INFO(modules::MAIN, "Received interrupt signal, shutting down...");
+    g_running = false;
 }
 
 // ============================================================================
-// ЗАПИСЬ ПЛОТОВ В ФАЙЛ
+// КЛАСС PROCESSOR
 // ============================================================================
 
-void write_plots_to_file(const std::vector<PlotData>& plots, std::ofstream& out_plots) {
-    if (plots.empty()) {
-        VRL_LOG_TRACE(modules::PROCESSING, "No plots to write");
-        return;
-    }
-    if (!out_plots.is_open()) {
-        VRL_LOG_ERROR(modules::PROCESSING, "Plots file is not open");
-        return;
-    }
-    
-    VRL_LOG_DEBUG(modules::PROCESSING, "Writing " + std::to_string(plots.size()) + " plots to file");
-    
-    for (const auto& plot : plots) {
-        out_plots << std::fixed << std::setprecision(6) << plot.time_sec << ","
-                  << std::setprecision(3) << plot.azimuth_deg << ","
-                  << plot.range_km << ","
-                  << plot.x_km << ","
-                  << plot.y_km << ","
-                  << plot.type << ","
-                  << std::oct << plot.code_data << std::dec << ","
-                  << plot.altitude << ","
-                  << (plot.altitude_valid ? "1" : "0") << ","
-                  << plot.altitude_attempts << ","
-                  << (plot.spi ? "1" : "0") << ","
-                  << plot.reply_count << ","
-                  << plot.garble_count << ","
-                  << plot.azimuth_span_deg << ","
-                  << plot.range_span_km << ","
-                  << plot.first_reply_time << ","
-                  << plot.last_reply_time << "\n";
-    }
-    out_plots.flush();
-}
-
-// ============================================================================
-// ПАРСИНГ ОТВЕТОВ
-// ============================================================================
-
-bool parse_reply_line(const std::string& line, Reply& reply) {
-    std::vector<std::string> parts;
-    std::stringstream ss_line(line);
-    std::string part;
-    while (std::getline(ss_line, part, ',')) {
-        parts.push_back(part);
-    }
-    if (parts.size() < 10) {
-        VRL_LOG_TRACE(modules::PROCESSING, "Invalid reply line: " + line);
-        return false;
-    }
-    
-    try {
-        reply.time_sec = std::stod(parts[0]);
-        reply.azimuth = static_cast<uint16_t>(std::stoi(parts[1]));
-        reply.range = static_cast<uint16_t>(std::stoi(parts[2]));
-        reply.type = parts[3];
-        
-        if (!parts[4].empty() && parts[4][0] == '0') {
-            reply.code_data = static_cast<uint32_t>(std::stoi(parts[4], nullptr, 8));
-        } else {
-            reply.code_data = static_cast<uint32_t>(std::stoi(parts[4]));
-        }
-        
-        reply.altitude = std::stoi(parts[5]);
-        reply.spi = (parts[6] == "1");
-        reply.sls_ratio = static_cast<uint8_t>(std::stoi(parts[7]));
-        reply.is_valid = (parts[8] == "1");
-        reply.is_garble = (parts[9] == "1");
-        return true;
-    } catch (const std::exception& e) {
-        VRL_LOG_WARN(modules::PROCESSING, "Failed to parse reply line: " + std::string(e.what()));
-        return false;
-    }
-}
-
-// ============================================================================
-// КЛАСТЕРИЗАТОР
-// ============================================================================
-
-class OnlineClusterer {
+class RadarProcessor {
 public:
-    OnlineClusterer(double range_bin_m = 30.0,
-                    int range_threshold_bins = 5,
-                    int azimuth_threshold_bins = 3,
-                    int completion_gap_bins = 8)
-        : range_bin_m_(range_bin_m)
-        , range_threshold_bins_(range_threshold_bins)
-        , azimuth_threshold_bins_(azimuth_threshold_bins)
-        , completion_gap_bins_(completion_gap_bins)
-        , current_azimuth_(0) {
-        VRL_LOG_DEBUG(modules::CLUSTER, "OnlineClusterer created: range_bin=" + 
-                      std::to_string(range_bin_m) + "m, range_threshold=" + 
-                      std::to_string(range_threshold_bins) + ", az_threshold=" + 
-                      std::to_string(azimuth_threshold_bins) + ", gap=" + 
-                      std::to_string(completion_gap_bins));
-    }
+    RadarProcessor() = default;
+    ~RadarProcessor() = default;
     
-    void update_azimuth(uint16_t azimuth) {
-        current_azimuth_ = azimuth;
-    }
-    
-    void add_reply(const Reply& reply) {
-        VRL_LOG_TRACE(modules::CLUSTER, "Adding reply: type=" + reply.type + 
-                      ", az=" + std::to_string(reply.azimuth) + 
-                      ", range=" + std::to_string(reply.range));
-        
-        double az_rad = (reply.azimuth * AZIMUTH_BIN_DEG) * M_PI / 180.0;
-        double range_m = reply.range * range_bin_m_;
-        
-        Reply r = reply;
-        r.x = range_m * sin(az_rad);
-        r.y = range_m * cos(az_rad);
-        
-        bool added = false;
-        for (auto& cluster : active_clusters_) {
-            if (cluster.is_near(r, range_threshold_bins_, azimuth_threshold_bins_)) {
-                cluster.add_reply(r);
-                added = true;
-                VRL_LOG_TRACE(modules::CLUSTER, "Added to existing cluster (" + 
-                              std::to_string(cluster.replies.size()) + " replies)");
-                break;
-            }
-        }
-        
-        if (!added) {
-            Cluster new_cluster;
-            new_cluster.add_reply(r);
-            active_clusters_.push_back(new_cluster);
-            VRL_LOG_TRACE(modules::CLUSTER, "Created new cluster (" + 
-                          std::to_string(active_clusters_.size()) + " total)");
-        }
-        
-        current_azimuth_ = reply.azimuth;
-    }
-
-    void process_sector(uint16_t azimuth) {
-        current_azimuth_ = azimuth;
-        check_completed_clusters();
-        
-        VRL_LOG_TRACE(modules::CLUSTER, "Processed sector at azimuth " + 
-                      std::to_string(azimuth) + ", active clusters=" + 
-                      std::to_string(active_clusters_.size()));
-    }
-
-    std::vector<PlotData> get_completed_plots() {
-        std::vector<PlotData> result;
-        
-        result = std::move(completed_plots_);
-        completed_plots_.clear();
-        
-        auto it = active_clusters_.begin();
-        while (it != active_clusters_.end()) {
-            if (it->is_completed(current_azimuth_, completion_gap_bins_)) {
-                if (it->replies.size() >= 2) {
-                    PlotData plot = create_plot_from_cluster(*it);
-                    result.push_back(plot);
-                    VRL_LOG_TRACE(modules::CLUSTER, "Completed cluster -> plot created");
-                }
-                it = active_clusters_.erase(it);
-            } else {
-                ++it;
-            }
-        }
-        
-        if (!result.empty()) {
-            VRL_LOG_DEBUG(modules::CLUSTER, "Returning " + std::to_string(result.size()) + " plots");
-        }
-        return result;
-    }
-
-    void finish_all() {
-        VRL_LOG_DEBUG(modules::CLUSTER, "Finishing all clusters (" + 
-                      std::to_string(active_clusters_.size()) + " active)");
-        
-        for (auto& cluster : active_clusters_) {
-            if (cluster.replies.size() >= 2) {
-                PlotData plot = create_plot_from_cluster(cluster);
-                completed_plots_.push_back(plot);
-                VRL_LOG_TRACE(modules::CLUSTER, "Finalized cluster -> plot created");
-            }
-        }
-        active_clusters_.clear();
-    }
-    
-    std::vector<PlotData> get_final_plots() {
-        auto result = std::move(completed_plots_);
-        completed_plots_.clear();
-        return result;
-    }
+    bool init(const CombinedConfig& config);
+    void run();
+    void shutdown();
     
 private:
-    struct Cluster {
-        std::vector<Reply> replies;
-        uint16_t min_azimuth{4096};
-        uint16_t max_azimuth{0};
-        uint16_t min_range{65535};
-        uint16_t max_range{0};
-        uint16_t last_azimuth{0};
-        uint16_t last_range{0};
-        double first_time{0};
-        double last_time{0};
-        double center_x{0};
-        double center_y{0};
-        bool has_center{false};
-        int garble_count{0};
-        
-        std::map<uint32_t, int> code_counts;
-        std::map<int, int> altitude_counts;
-        uint32_t best_code{0};
-        int best_altitude{0};
-        int best_code_count{0};
-        int best_altitude_count{0};
-        
-        void add_reply(const Reply& r) {
-            if (replies.empty()) {
-                first_time = r.time_sec;
-                center_x = r.x;
-                center_y = r.y;
-                has_center = true;
-                min_azimuth = max_azimuth = r.azimuth;
-                min_range = max_range = r.range;
-                last_azimuth = r.azimuth;
-                last_range = r.range;
-            }
-            replies.push_back(r);
-            if (r.is_garble) garble_count++;
-            
-            last_time = r.time_sec;
-            last_azimuth = r.azimuth;
-            last_range = r.range;
-            min_azimuth = std::min(min_azimuth, r.azimuth);
-            max_azimuth = std::max(max_azimuth, r.azimuth);
-            min_range = std::min(min_range, r.range);
-            max_range = std::max(max_range, r.range);
-            
-            if (r.type == "UVD_DATA" || r.type == "RBS_A") {
-                code_counts[r.code_data]++;
-                if (code_counts[r.code_data] > best_code_count) {
-                    best_code_count = code_counts[r.code_data];
-                    best_code = r.code_data;
-                }
-            }
-            
-            if (r.altitude > 0) {
-                altitude_counts[r.altitude]++;
-                if (altitude_counts[r.altitude] > best_altitude_count) {
-                    best_altitude_count = altitude_counts[r.altitude];
-                    best_altitude = r.altitude;
-                }
-            }
-            
-            if (has_center) {
-                double alpha = 1.0 / replies.size();
-                center_x = center_x * (1 - alpha) + r.x * alpha;
-                center_y = center_y * (1 - alpha) + r.y * alpha;
-            }
-        }
-
-        bool is_near(const Reply& r, int range_threshold_bins, int azimuth_threshold_bins) const {
-            if (replies.empty()) return true;
-            
-            int range_diff = std::abs(static_cast<int>(r.range) - static_cast<int>(last_range));
-            if (range_diff > range_threshold_bins) return false;
-            
-            int az_diff = static_cast<int>(r.azimuth) - static_cast<int>(last_azimuth);
-            if (az_diff < 0) az_diff += 4096;
-            if (az_diff > azimuth_threshold_bins) return false;
-            
-            return true;
-        }
-        
-        bool is_completed(uint16_t current_azimuth, int completion_gap_bins) const {
-            if (replies.empty()) return false;
-            
-            int az_diff = static_cast<int>(current_azimuth) - last_azimuth;
-            if (az_diff < 0) az_diff += 4096;
-            
-            return az_diff > completion_gap_bins;
-        }
-    };
+    bool load_config();
+    bool load_data();
+    bool init_tracker();
+    bool init_simulator();
     
-    void check_completed_clusters() {
-        auto it = active_clusters_.begin();
-        while (it != active_clusters_.end()) {
-            if (it->is_completed(current_azimuth_, completion_gap_bins_)) {
-                if (it->replies.size() >= 2) {
-                    PlotData plot = create_plot_from_cluster(*it);
-                    completed_plots_.push_back(plot);
-                    VRL_LOG_TRACE(modules::CLUSTER, "Cluster completed, plot created");
-                }
-                it = active_clusters_.erase(it);
-            } else {
-                ++it;
-            }
-        }
-    }
-
-    PlotData create_plot_from_cluster(const Cluster& cluster) {
-        PlotData plot;
-        
-        bool has_rbs = false;
-        bool has_uvd = false;
-        
-        for (const auto& reply : cluster.replies) {
-            if (reply.type == "RBS_A" || reply.type == "RBS_C") has_rbs = true;
-            if (reply.type == "UVD_DATA" || reply.type == "UVD_ALT") has_uvd = true;
-        }
-        
-        if (has_rbs && has_uvd) {
-            plot.type = "MIXED";
-        } else if (has_rbs) {
-            plot.type = "RBS";
-        } else if (has_uvd) {
-            plot.type = "UVD";
-        } else {
-            plot.type = "UNKNOWN";
-        }
-        
-        if (cluster.best_code != 0) {
-            plot.code_data = cluster.best_code;
-        } else {
-            plot.code_data = cluster.replies[0].code_data;
-        }
-        
-        if (cluster.best_altitude != 0) {
-            plot.altitude = cluster.best_altitude;
-            plot.altitude_valid = true;
-            plot.altitude_attempts = cluster.best_altitude_count;
-        } else {
-            plot.altitude = 0;
-            plot.altitude_valid = false;
-            plot.altitude_attempts = 0;
-        }
-        
-        plot.reply_count = cluster.replies.size();
-        plot.garble_count = cluster.garble_count;
-        plot.spi = false;
-        
-        double sum_sin = 0.0;
-        double sum_cos = 0.0;
-        double sum_range_bins = 0.0;
-        double first_time = cluster.replies[0].time_sec;
-        double last_time = cluster.replies[0].time_sec;
-        
-        for (const auto& reply : cluster.replies) {
-            double az_rad = reply.azimuth * AZIMUTH_BIN_DEG * M_PI / 180.0;
-            sum_sin += sin(az_rad);
-            sum_cos += cos(az_rad);
-            sum_range_bins += reply.range;
-            first_time = std::min(first_time, reply.time_sec);
-            last_time = std::max(last_time, reply.time_sec);
-        }
-        
-        double avg_az_rad = atan2(sum_sin, sum_cos);
-        if (avg_az_rad < 0) avg_az_rad += 2 * M_PI;
-        
-        double avg_azimuth_bins = avg_az_rad * 4096.0 / (2 * M_PI);
-        double avg_range_bins = sum_range_bins / cluster.replies.size();
-        
-        plot.azimuth_deg = avg_azimuth_bins * AZIMUTH_BIN_DEG;
-        plot.range_km = avg_range_bins * range_bin_m_ / 1000.0;
-        plot.x_km = plot.range_km * sin(avg_az_rad);
-        plot.y_km = plot.range_km * cos(avg_az_rad);
-        
-        int az_span_bins = static_cast<int>(cluster.max_azimuth) - static_cast<int>(cluster.min_azimuth);
-        if (az_span_bins < 0) az_span_bins += 4096;
-        int range_span_bins = static_cast<int>(cluster.max_range) - static_cast<int>(cluster.min_range);
-        
-        plot.azimuth_span_deg = az_span_bins * AZIMUTH_BIN_DEG;
-        plot.range_span_km = range_span_bins * range_bin_m_ / 1000.0;
-        
-        plot.time_sec = (first_time + last_time) / 2.0;
-        plot.first_reply_time = first_time;
-        plot.last_reply_time = last_time;
-        
-        return plot;
-    }
+    void process_loop();
+    void process_scan(const ScanReplies& scan);
+    void save_results();
+    void print_stats();
     
-    double range_bin_m_;
-    int range_threshold_bins_;
-    int azimuth_threshold_bins_;
-    int completion_gap_bins_;
+    // Генерация тестовых данных (если нет входного файла)
+    void generate_test_data();
     
-    uint16_t current_azimuth_{0};
+    CombinedConfig config_;
+    SystemConfig system_config_;
     
-    std::vector<Cluster> active_clusters_;
-    std::vector<PlotData> completed_plots_;
+    std::unique_ptr<ReplySimulator> simulator_;
+    std::unique_ptr<ClusterTracker> cluster_tracker_;
+    std::unique_ptr<TrackManager> track_manager_;
+    
+    // Данные
+    std::vector<ScanReplies> scans_;
+    std::vector<TargetReport> all_reports_;
+    std::vector<Track> all_tracks_;
+    
+    // Статистика
+    struct Stats {
+        uint32_t scans_processed{0};
+        uint32_t replies_processed{0};
+        uint32_t clusters_formed{0};
+        uint32_t reports_generated{0};
+        uint32_t tracks_created{0};
+        uint32_t tracks_confirmed{0};
+        double processing_time_ms{0.0};
+    } stats_;
+    
+    uint32_t revolution_counter_{0};
+    uint64_t scan_counter_{0};
 };
 
 // ============================================================================
-// ОБРАБОТКА ПЛОТА В ТРЕКЕРЕ
+// РЕАЛИЗАЦИЯ
 // ============================================================================
 
-const double MIN_SPEED_THRESHOLD = 0.001;
-const double MIN_TIME_DELTA = 0.1;
-
-void process_plot_in_tracker(const PlotData& plot, 
-                             TrackManager& tracker,
-                             std::map<uint64_t, int>& last_hit,
-                             std::map<uint64_t, PlotData>& prev_plot,
-                             std::ofstream& out_tracks,
-                             const std::string& type,
-                             uint64_t id_offset,
-                             double revolution_time) {
+bool RadarProcessor::init(const CombinedConfig& config) {
+    config_ = config;
     
-    VRL_LOG_TRACE(modules::TRACKER, "Processing plot: type=" + type + 
-                  ", time=" + std::to_string(plot.time_sec) + 
-                  ", code=" + std::to_string(plot.code_data));
-    
-    TargetReport report;
-    report.x = plot.x_km * 1000.0;
-    report.y = plot.y_km * 1000.0;
-    report.azimuth_deg = plot.azimuth_deg;
-    report.range_m = plot.range_km * 1000.0;
-    report.signal_strength = 100;
-    
-    int revolution = static_cast<int>(plot.time_sec / revolution_time);
-    
-    if (type == "RBS") {
-        report.type = TargetReport::SourceType::RBS;
-        report.rbs.mode3a_code = static_cast<uint16_t>(plot.code_data);
-        report.rbs.modec_altitude = plot.altitude;
-        report.rbs.spi = plot.spi;
+    // Настройка логгера - ИСПРАВЛЕНО
+    if (config_.verbose) {
+        Logger::instance().set_module_level(modules::MAIN, LogLevel::DEBUG);
+    } else if (config_.debug) {
+        Logger::instance().set_module_level(modules::MAIN, LogLevel::TRACE);
     } else {
-        report.type = TargetReport::SourceType::UVD;
-        report.uvd.raw_data20 = plot.code_data;
-        report.uvd.altitude = plot.altitude;
+        Logger::instance().set_module_level(modules::MAIN, LogLevel::INFO);
     }
     
-    tracker.process_targets({report}, revolution);
+    VRL_LOG_INFO(modules::MAIN, "=== VRL-Radar Processor (2_3_combined) ===");
+    VRL_LOG_INFO(modules::MAIN, "Clusterer type: " + config_.clusterer_type);
     
-    auto tracks = tracker.get_active_tracks();
+    if (!load_config()) {
+        VRL_LOG_ERROR(modules::MAIN, "Failed to load config");
+        return false;
+    }
     
-    int tracks_written = 0;
-    for (const auto& track : tracks) {
-        auto it = last_hit.find(track.id);
-        bool is_new_or_updated = (it == last_hit.end() || it->second != track.hit_count);
+    if (!init_tracker()) {
+        VRL_LOG_ERROR(modules::MAIN, "Failed to initialize tracker");
+        return false;
+    }
+    
+    if (!config_.input_file.empty()) {
+        if (!load_data()) {
+            VRL_LOG_ERROR(modules::MAIN, "Failed to load data from: " + config_.input_file);
+            return false;
+        }
+    } else {
+        VRL_LOG_INFO(modules::MAIN, "No input file specified, generating test data");
+        if (!init_simulator()) {
+            VRL_LOG_ERROR(modules::MAIN, "Failed to initialize simulator");
+            return false;
+        }
+        generate_test_data();
+    }
+    
+    VRL_LOG_INFO(modules::MAIN, "Processor initialized successfully");
+    return true;
+}
 
-        if (is_new_or_updated) {
-            double speed_km_s = track.ground_speed / 1000.0;
-            double course_deg = track.course_deg;
+// tools/2_3_combined.cpp
+// В функции load_config() используйте ConfigLoader:
+
+bool RadarProcessor::load_config() {
+    if (!config_.config_file.empty()) {
+        ConfigLoader loader;
+        if (loader.load(config_.config_file, system_config_)) {
+            VRL_LOG_INFO(modules::MAIN, "Loaded config from: " + config_.config_file);
             
-            if (speed_km_s < MIN_SPEED_THRESHOLD) {
-                auto prev = prev_plot.find(track.id);
-                if (prev != prev_plot.end()) {
-                    double dt = plot.time_sec - prev->second.time_sec;
-                    if (dt > MIN_TIME_DELTA) {
-                        double dx = plot.x_km - prev->second.x_km;
-                        double dy = plot.y_km - prev->second.y_km;
-                        double dist = sqrt(dx*dx + dy*dy);
-                        speed_km_s = dist / dt;
-                        course_deg = atan2(dx, dy) * 180.0 / M_PI;
-                        if (course_deg < 0) course_deg += 360.0;
-                    }
-                }
-                prev_plot[track.id] = plot;
+            // Выводим информацию о кластеризаторе
+            if (system_config_.clusterer.type == ClustererConfig::Type::DBSCAN) {
+                VRL_LOG_INFO(modules::MAIN, "Clusterer: DBSCAN (range_gap=" + 
+                             std::to_string(system_config_.clusterer.max_range_gap) +
+                             ", min_points=" + std::to_string(system_config_.clusterer.min_points) +
+                             ", az_coeff=" + 
+                             std::to_string(system_config_.clusterer.azimuth_gap_coefficient) + ")");
+            } else {
+                VRL_LOG_INFO(modules::MAIN, "Clusterer: Legacy (gap=" + 
+                             std::to_string(system_config_.clusterer.max_gap_azimuth) +
+                             ", window=" + 
+                             std::to_string(system_config_.clusterer.range_window) + ")");
             }
             
-            uint64_t display_id = track.id + id_offset;
-            uint32_t code = (type == "RBS") ? track.mode3a_code : track.uvd_data20;
-            
-            out_tracks << std::fixed << std::setprecision(3) << plot.time_sec << ","
-                    << display_id << ","
-                    << std::setprecision(2) << track.x / 1000.0 << ","
-                    << track.y / 1000.0 << ","
-                    << std::setprecision(3) << speed_km_s << ","
-                    << std::setprecision(1) << course_deg << ","
-                    << format_code(code, type) << ","
-                    << track.altitude << ","
-                    << (track.altitude > 0 ? "1" : "0") << ","
-                    << std::setprecision(2) << track.confidence << ","
-                    << track.hit_count << ","
-                    << static_cast<int>(track.state) << ","
-                    << type << ","
-                    << (track.code_reliable ? "1" : "0") << ","
-                    << (track.altitude_reliable ? "1" : "0") << "\n";
-
-            last_hit[track.id] = track.hit_count;
-            tracks_written++;
+            return true;
+        } else {
+            VRL_LOG_ERROR(modules::MAIN, "Failed to load config: " + config_.config_file);
         }
     }
     
-    if (tracks_written > 0) {
-        VRL_LOG_TRACE(modules::TRACKER, "Wrote " + std::to_string(tracks_written) + " tracks");
+    // Конфигурация по умолчанию
+    system_config_.radar.range_bin_rbs = 30.0;
+    system_config_.radar.range_bin_uvd = 60.0;
+    system_config_.radar.beamwidth_deg = 5.0;
+    system_config_.radar.min_amplitude = 10;
+    system_config_.beamwidth_deg = 5.0;
+    system_config_.revolution_time = 5.0;
+    
+    system_config_.tracker.min_hits_to_confirm = config_.min_hits_to_confirm;
+    system_config_.tracker.max_coast_count = config_.max_coast_count;
+    system_config_.tracker.max_gate_distance = config_.max_gate_distance;
+    system_config_.tracker.max_gate_azimuth = config_.max_gate_azimuth;
+    system_config_.tracker.process_noise = 0.1;
+    system_config_.tracker.measurement_noise = 1.0;
+    system_config_.tracker.enable_rbs_tracking = true;
+    system_config_.tracker.enable_uvd_tracking = true;
+    
+    return true;
+}
+
+bool RadarProcessor::init_simulator() {
+    SimulatorConfig sim_config;
+    sim_config.radar = system_config_.radar;
+    sim_config.rbs.snr_db = 20.0;
+    sim_config.rbs.amp_variation = 0.1;
+    sim_config.uvd.snr_db = 20.0;
+    sim_config.uvd.error_probability = 0.01;
+    sim_config.sls.enabled = false;
+    
+    simulator_ = std::make_unique<ReplySimulator>(sim_config);
+    VRL_LOG_INFO(modules::MAIN, "Simulator initialized");
+    return true;
+}
+
+// ============================================================================
+// ИНИЦИАЛИЗАЦИЯ ТРЕКЕРА С ВЫБОРОМ АЛГОРИТМА
+// ============================================================================
+
+// tools/2_3_combined.cpp
+// В функции init_tracker():
+
+bool RadarProcessor::init_tracker() {
+    // Используем конфигурацию из system_config_
+    ClustererConfig clusterer_config = system_config_.clusterer;
+    
+    // Вывод информации о выбранном алгоритме
+    if (clusterer_config.type == ClustererConfig::Type::DBSCAN) {
+        VRL_LOG_INFO(modules::MAIN, "Using DBSCANClusterer: range_gap=" + 
+                     std::to_string(clusterer_config.max_range_gap) +
+                     ", min_points=" + std::to_string(clusterer_config.min_points) +
+                     ", azimuth_coeff=" + std::to_string(clusterer_config.azimuth_gap_coefficient));
+    } else {
+        VRL_LOG_INFO(modules::MAIN, "Using LegacyClusterer: gap=" + 
+                     std::to_string(clusterer_config.max_gap_azimuth) +
+                     ", window=" + std::to_string(clusterer_config.range_window));
+    }
+    
+    // Создаем ClusterTracker с конфигурацией
+    cluster_tracker_ = std::make_unique<ClusterTracker>(clusterer_config);
+    
+    // Создаем TrackManager
+    track_manager_ = std::make_unique<TrackManager>(system_config_.tracker);
+    
+    // Включаем отладку если нужно
+    if (config_.debug) {
+        auto* clusterer = cluster_tracker_->get_clusterer();
+        if (clusterer) {
+            auto* dbscan = dynamic_cast<DBSCANClusterer*>(clusterer);
+            if (dbscan) {
+                dbscan->set_debug(true);
+            }
+        }
+    }
+    
+    VRL_LOG_INFO(modules::MAIN, "Tracker initialized with: " + 
+                 cluster_tracker_->get_algorithm_name());
+    return true;
+}
+
+bool RadarProcessor::load_data() {
+    // TODO: Загрузка данных из файла (реализовать позже)
+    VRL_LOG_WARN(modules::MAIN, "Data loading from file not implemented yet");
+    return false;
+}
+
+void RadarProcessor::generate_test_data() {
+    VRL_LOG_INFO(modules::MAIN, "Generating test data...");
+    
+    // Создаем тестовые цели
+    std::vector<GeneratedTarget> targets;
+    
+    // Цель 1: RBS
+    GeneratedTarget target1;
+    target1.type = GeneratedTarget::Type::RBS;
+    target1.name = "RBS_Target_1";
+    target1.azimuth_deg = 45.0;
+    target1.range_km = 20.0;
+    target1.rbs_code_octal = 01234;  // 1234 в восьмеричной системе
+    target1.spi = false;
+    target1.enabled = true;
+    targets.push_back(target1);
+    
+    // Цель 2: RBS с SPI
+    GeneratedTarget target2;
+    target2.type = GeneratedTarget::Type::RBS;
+    target2.name = "RBS_Target_2";
+    target2.azimuth_deg = 120.0;
+    target2.range_km = 35.0;
+    target2.rbs_code_octal = 05670;  // 5670 в восьмеричной системе
+    target2.spi = true;
+    target2.enabled = true;
+    targets.push_back(target2);
+    
+    // Цель 3: UVD
+    GeneratedTarget target3;
+    target3.type = GeneratedTarget::Type::UVD;
+    target3.name = "UVD_Target_3";
+    target3.azimuth_deg = 200.0;
+    target3.range_km = 50.0;
+    target3.uvd_data_dec = 0x12345;
+    target3.enabled = true;
+    targets.push_back(target3);
+    
+    // Цель 4: UVD
+    GeneratedTarget target4;
+    target4.type = GeneratedTarget::Type::UVD;
+    target4.name = "UVD_Target_4";
+    target4.azimuth_deg = 300.0;
+    target4.range_km = 25.0;
+    target4.uvd_data_dec = 0x67890;
+    target4.enabled = true;
+    targets.push_back(target4);
+    
+    // Генерируем сканы на 5 оборотов
+    const int REVOLUTIONS = 5;
+    const int SCANS_PER_REV = 360;
+    
+    for (int rev = 0; rev < REVOLUTIONS; ++rev) {
+        for (int deg = 0; deg < 360; deg += 1) {
+            uint16_t azimuth = static_cast<uint16_t>(deg * DEG_TO_BIN);
+            ScanReplies scan(azimuth, rev * 360 + deg);
+            
+            // Проверяем каждую цель
+            for (const auto& target : targets) {
+                if (!target.enabled) continue;
+                
+                int target_az_bin = static_cast<int>(target.azimuth_deg * DEG_TO_BIN);
+                int az_diff = std::abs(static_cast<int>(azimuth) - target_az_bin);
+                if (az_diff > AZIMUTH_BINS / 2) {
+                    az_diff = AZIMUTH_BINS - az_diff;
+                }
+                
+                // Цель видна в пределах +/- 2 градуса
+                if (az_diff < static_cast<int>(2 * DEG_TO_BIN)) {
+                    if (target.type == GeneratedTarget::Type::RBS) {
+                        uint16_t range_bin = static_cast<uint16_t>(target.range_km * 1000.0 / 
+                                                                   system_config_.radar.range_bin_rbs);
+                        RBSReply reply = simulator_->generate_rbs(
+                            azimuth,
+                            range_bin,
+                            target.get_rbs_code(),
+                            target.spi
+                        );
+                        scan.rbs_replies.push_back(reply);
+                    } else {
+                        uint16_t range_bin = static_cast<uint16_t>(target.range_km * 1000.0 / 
+                                                                   system_config_.radar.range_bin_uvd);
+                        UVDReply reply = simulator_->generate_uvd(
+                            azimuth,
+                            range_bin,
+                            target.get_current_uvd_data()
+                        );
+                        scan.uvd_replies.push_back(reply);
+                    }
+                }
+            }
+            
+            scans_.push_back(scan);
+        }
+    }
+    
+    VRL_LOG_INFO(modules::MAIN, "Generated " + std::to_string(scans_.size()) + " scans");
+}
+
+// ============================================================================
+// ОСНОВНОЙ ЦИКЛ ОБРАБОТКИ
+// ============================================================================
+
+void RadarProcessor::run() {
+    if (scans_.empty()) {
+        VRL_LOG_ERROR(modules::MAIN, "No scans to process");
+        return;
+    }
+    
+    VRL_LOG_INFO(modules::MAIN, "Starting processing: " + std::to_string(scans_.size()) + " scans");
+    
+    auto start_time = std::chrono::high_resolution_clock::now();
+    
+    for (const auto& scan : scans_) {
+        if (!g_running) break;
+        
+        process_scan(scan);
+        revolution_counter_++;
+        
+        if (config_.verbose && revolution_counter_ % 100 == 0) {
+            VRL_LOG_DEBUG(modules::MAIN, "Processed " + std::to_string(revolution_counter_) + 
+                          " scans, " + std::to_string(all_reports_.size()) + " reports");
+        }
+    }
+    
+    auto end_time = std::chrono::high_resolution_clock::now();
+    stats_.processing_time_ms = std::chrono::duration<double, std::milli>(
+        end_time - start_time
+    ).count();
+    
+    // Получаем финальные треки
+    auto tracks = track_manager_->get_active_tracks();
+    all_tracks_.insert(all_tracks_.end(), tracks.begin(), tracks.end());
+    
+    print_stats();
+    save_results();
+}
+
+void RadarProcessor::process_scan(const ScanReplies& scan) {
+    stats_.scans_processed++;
+    stats_.replies_processed += scan.reply_count();
+    
+    if (!scan.has_replies()) {
+        // Пустой скан - все равно нужно обработать для закрытия кластеров
+        cluster_tracker_->process_scan(scan);
+        return;
+    }
+    
+    // 1. Кластеризация
+    cluster_tracker_->process_scan(scan);
+    
+    // 2. Получаем завершенные кластеры
+    auto clusters = cluster_tracker_->get_completed_clusters();
+    stats_.clusters_formed += clusters.size();
+    
+    if (clusters.empty()) {
+        return;
+    }
+    
+    // 3. Обработка кластеров -> отчеты
+    ClusterProcessor processor(system_config_.radar);
+    processor.set_min_hits(config_.min_hits);
+    processor.set_confidence_threshold(config_.min_confidence);
+    
+    std::vector<TargetReport> reports;
+    for (const auto& cluster : clusters) {
+        auto cluster_reports = processor.process_cluster(cluster);
+        reports.insert(reports.end(), cluster_reports.begin(), cluster_reports.end());
+    }
+    
+    if (reports.empty()) {
+        return;
+    }
+    
+    stats_.reports_generated += reports.size();
+    
+    // 4. Трекинг
+    uint32_t revolution = static_cast<uint32_t>(revolution_counter_ / 360);
+    track_manager_->process_targets(reports, revolution);
+    
+    // 5. Сохраняем отчеты
+    all_reports_.insert(all_reports_.end(), reports.begin(), reports.end());
+    
+    // 6. Получаем активные треки для статистики
+    auto tracks = track_manager_->get_active_tracks();
+    stats_.tracks_created = tracks.size();
+    
+    // Подсчет подтвержденных треков
+    stats_.tracks_confirmed = 0;
+    for (const auto& track : tracks) {
+        if (track.is_confirmed()) {
+            stats_.tracks_confirmed++;
+        }
     }
 }
 
 // ============================================================================
-// ЗАГРУЗКА КОНФИГУРАЦИИ
+// СОХРАНЕНИЕ РЕЗУЛЬТАТОВ
 // ============================================================================
 
-struct ProcessingConfig {
-    std::string input_file = "replies.txt";
-    std::string tracks_file = "tracks_combined.txt";
-    std::string plots_file = "";
-    
-    int range_threshold_bins = 5;
-    int azimuth_threshold_bins = 3;
-    int completion_gap_bins = 8;
-    
-    double max_gate_distance_km = 5.0;
-    double max_gate_azimuth_deg = 30.0;
-    int min_hits_to_confirm = 3;
-    int max_coast_count = 10;
-    double process_noise = 0.5;
-    double measurement_noise = 0.1;
-    double revolution_time = 5.0;
-    
-    bool debug_mode = false;
-};
-
-ProcessingConfig load_config(const std::string& config_file) {
-    VRL_LOG_DEBUG(modules::CONFIG, "Loading config from: " + config_file);
-    
-    ProcessingConfig config;
-    
-    ConfigLoader loader;
-    SystemConfig system_config;
-    
-    if (!loader.load(config_file, system_config)) {
-        VRL_LOG_WARN(modules::CONFIG, "Cannot load config file " + config_file + ", using defaults");
-        return config;
+void RadarProcessor::save_results() {
+    if (config_.output_file.empty()) {
+        return;
     }
     
-    config.range_threshold_bins = 5;
-    config.azimuth_threshold_bins = 3;
-    config.completion_gap_bins = 8;
+    std::lock_guard<std::mutex> lock(g_output_mutex);
     
-    config.max_gate_distance_km = system_config.tracker.max_gate_distance / 1000.0;
-    config.max_gate_azimuth_deg = system_config.tracker.max_gate_azimuth;
-    config.min_hits_to_confirm = system_config.tracker.min_hits_to_confirm;
-    config.max_coast_count = system_config.tracker.max_coast_count;
-    config.process_noise = system_config.tracker.process_noise;
-    config.measurement_noise = system_config.tracker.measurement_noise;
-    config.revolution_time = system_config.revolution_time;
-    config.debug_mode = system_config.tracker.debug_mode;
+    std::ofstream file(config_.output_file);
+    if (!file.is_open()) {
+        VRL_LOG_ERROR(modules::MAIN, "Failed to open output file: " + config_.output_file);
+        return;
+    }
     
-    config.plots_file = system_config.processing.plots_output_file;
+    file << "# VRL-Radar Targets Output\n";
+    file << "# Generated by 2_3_combined\n";
+    file << "# Clusterer: " << config_.clusterer_type << "\n";
+    file << "# Format: revolution, azimuth_deg, range_km, code, type, confidence\n\n";
     
-    VRL_LOG_INFO(modules::CONFIG, "Configuration loaded successfully");
-    VRL_LOG_DEBUG(modules::CONFIG, "  Range threshold bins: " + std::to_string(config.range_threshold_bins));
-    VRL_LOG_DEBUG(modules::CONFIG, "  Azimuth threshold bins: " + std::to_string(config.azimuth_threshold_bins));
-    VRL_LOG_DEBUG(modules::CONFIG, "  Completion gap bins: " + std::to_string(config.completion_gap_bins));
-    VRL_LOG_DEBUG(modules::CONFIG, "  Max gate distance: " + std::to_string(config.max_gate_distance_km) + " km");
-    VRL_LOG_DEBUG(modules::CONFIG, "  Max gate azimuth: " + std::to_string(config.max_gate_azimuth_deg) + "°");
-    VRL_LOG_DEBUG(modules::CONFIG, "  Min hits to confirm: " + std::to_string(config.min_hits_to_confirm));
-    VRL_LOG_DEBUG(modules::CONFIG, "  Max coast count: " + std::to_string(config.max_coast_count));
-    VRL_LOG_DEBUG(modules::CONFIG, "  Process noise: " + std::to_string(config.process_noise));
-    VRL_LOG_DEBUG(modules::CONFIG, "  Measurement noise: " + std::to_string(config.measurement_noise));
-    VRL_LOG_DEBUG(modules::CONFIG, "  Revolution time: " + std::to_string(config.revolution_time));
-    VRL_LOG_DEBUG(modules::CONFIG, "  Debug mode: " + std::string(config.debug_mode ? "true" : "false"));
-    if (!config.plots_file.empty()) {
-        VRL_LOG_DEBUG(modules::CONFIG, "  Plots output: " + config.plots_file);
+    for (const auto& report : all_reports_) {
+        file << std::fixed << std::setprecision(2);
+        file << revolution_counter_ << ", ";
+        file << report.azimuth_deg << ", ";
+        file << report.range_m / 1000.0 << ", ";
+        
+        if (report.type == TargetReport::SourceType::RBS) {
+            file << std::oct << report.rbs.mode3a_code << ", ";
+            file << "RBS, ";
+        } else {
+            file << std::hex << report.uvd.raw_data20 << ", ";
+            file << "UVD, ";
+        }
+        
+        file << std::dec << static_cast<int>(report.signal_strength) << "\n";
+    }
+    
+    file.close();
+    VRL_LOG_INFO(modules::MAIN, "Saved " + std::to_string(all_reports_.size()) + 
+                 " reports to: " + config_.output_file);
+    
+    // Сохраняем треки отдельно
+    if (!config_.plots_output_file.empty()) {
+        std::ofstream track_file(config_.plots_output_file);
+        if (track_file.is_open()) {
+            track_file << "# VRL-Radar Tracks Output\n";
+            track_file << "# Format: id, x, y, speed, course, state\n\n";
+            
+            auto tracks = track_manager_->get_active_tracks();
+            for (const auto& track : tracks) {
+                track_file << track.id << ", ";
+                track_file << std::fixed << std::setprecision(1);
+                track_file << track.x << ", " << track.y << ", ";
+                track_file << track.ground_speed << ", " << track.course_deg << ", ";
+                
+                switch (track.state) {
+                    case TrackState::NEW: track_file << "NEW"; break;
+                    case TrackState::ACTIVE: track_file << "ACTIVE"; break;
+                    case TrackState::COASTING: track_file << "COASTING"; break;
+                    case TrackState::DROPPED: track_file << "DROPPED"; break;
+                }
+                track_file << "\n";
+            }
+            track_file.close();
+            VRL_LOG_INFO(modules::MAIN, "Saved " + std::to_string(tracks.size()) + 
+                         " tracks to: " + config_.plots_output_file);
+        }
+    }
+}
+
+// ============================================================================
+// СТАТИСТИКА
+// ============================================================================
+
+void RadarProcessor::print_stats() {
+    std::stringstream ss;
+    ss << "\n";
+    ss << "=== Processing Statistics ===\n";
+    ss << "Scans processed:       " << stats_.scans_processed << "\n";
+    ss << "Replies processed:     " << stats_.replies_processed << "\n";
+    ss << "Clusters formed:       " << stats_.clusters_formed << "\n";
+    ss << "Reports generated:     " << stats_.reports_generated << "\n";
+    ss << "Tracks created:        " << stats_.tracks_created << "\n";
+    ss << "Tracks confirmed:      " << stats_.tracks_confirmed << "\n";
+    ss << "Processing time:       " << stats_.processing_time_ms << " ms\n";
+    ss << "================================\n";
+    
+    VRL_LOG_INFO(modules::MAIN, ss.str());
+}
+
+void RadarProcessor::shutdown() {
+    VRL_LOG_INFO(modules::MAIN, "Shutting down processor...");
+}
+
+// ============================================================================
+// ПАРСИНГ АРГУМЕНТОВ
+// ============================================================================
+
+CombinedConfig parse_arguments(int argc, char* argv[]) {
+    CombinedConfig config;
+    
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        
+        if (arg == "--config" && i + 1 < argc) {
+            config.config_file = argv[++i];
+        } else if (arg == "--input" && i + 1 < argc) {
+            config.input_file = argv[++i];
+        } else if (arg == "--output" && i + 1 < argc) {
+            config.output_file = argv[++i];
+        } else if (arg == "--plots" && i + 1 < argc) {
+            config.plots_output_file = argv[++i];
+            config.save_plots = true;
+        } else if (arg == "--clusterer" && i + 1 < argc) {
+            config.clusterer_type = argv[++i];
+        } else if (arg == "--dbscan-range-gap" && i + 1 < argc) {
+            config.dbscan_max_range_gap = std::stoi(argv[++i]);
+        } else if (arg == "--dbscan-min-points" && i + 1 < argc) {
+            config.dbscan_min_points = std::stoi(argv[++i]);
+        } else if (arg == "--dbscan-az-coeff" && i + 1 < argc) {
+            config.dbscan_azimuth_gap_coefficient = std::stod(argv[++i]);
+        } else if (arg == "--legacy-gap" && i + 1 < argc) {
+            config.legacy_max_gap_azimuth = std::stoi(argv[++i]);
+        } else if (arg == "--legacy-window" && i + 1 < argc) {
+            config.legacy_range_window = std::stoi(argv[++i]);
+        } else if (arg == "--min-hits" && i + 1 < argc) {
+            config.min_hits = std::stoi(argv[++i]);
+        } else if (arg == "--min-confidence" && i + 1 < argc) {
+            config.min_confidence = std::stod(argv[++i]);
+        } else if (arg == "--min-hits-to-confirm" && i + 1 < argc) {
+            config.min_hits_to_confirm = std::stoi(argv[++i]);
+        } else if (arg == "--max-coast" && i + 1 < argc) {
+            config.max_coast_count = std::stoi(argv[++i]);
+        } else if (arg == "--gate-distance" && i + 1 < argc) {
+            config.max_gate_distance = std::stod(argv[++i]);
+        } else if (arg == "--gate-azimuth" && i + 1 < argc) {
+            config.max_gate_azimuth = std::stod(argv[++i]);
+        } else if (arg == "--verbose" || arg == "-v") {
+            config.verbose = true;
+        } else if (arg == "--debug" || arg == "-d") {
+            config.debug = true;
+        } else if (arg == "--help" || arg == "-h") {
+            std::cout << "Usage: " << argv[0] << " [options]\n\n"
+                      << "Options:\n"
+                      << "  --config FILE           Config file\n"
+                      << "  --input FILE            Input data file (optional)\n"
+                      << "  --output FILE           Output targets file\n"
+                      << "  --plots FILE            Output tracks file\n\n"
+                      << "  --clusterer TYPE        Clusterer type: dbscan or legacy (default: dbscan)\n\n"
+                      << "  DBSCAN options:\n"
+                      << "  --dbscan-range-gap N    Max range gap in bins (default: 3)\n"
+                      << "  --dbscan-min-points N   Min points for cluster (default: 2)\n"
+                      << "  --dbscan-az-coeff N    Azimuth gap coefficient (default: 1.2)\n\n"
+                      << "  Legacy options:\n"
+                      << "  --legacy-gap N          Max gap azimuth (default: 8)\n"
+                      << "  --legacy-window N       Range window (default: 30)\n\n"
+                      << "  Processing:\n"
+                      << "  --min-hits N            Min hits for report (default: 2)\n"
+                      << "  --min-confidence N      Min confidence (default: 0.3)\n\n"
+                      << "  Tracker:\n"
+                      << "  --min-hits-to-confirm N Min hits to confirm track (default: 3)\n"
+                      << "  --max-coast N           Max coast count (default: 5)\n"
+                      << "  --gate-distance N       Max gate distance (default: 150)\n"
+                      << "  --gate-azimuth N        Max gate azimuth (default: 30)\n\n"
+                      << "  General:\n"
+                      << "  --verbose, -v           Verbose output\n"
+                      << "  --debug, -d             Debug mode (trace logging)\n"
+                      << "  --help, -h              Show this help\n";
+            exit(0);
+        }
     }
     
     return config;
 }
 
 // ============================================================================
-// MAIN
+// ТОЧКА ВХОДА
 // ============================================================================
 
 int main(int argc, char* argv[]) {
-    std::string config_file = "../config/radar.json";
-    std::string input_file = "replies.txt";
-    std::string tracks_file = "tracks_combined.txt";
+    // Настройка обработчика сигналов
+    signal(SIGINT, signal_handler);
+    signal(SIGTERM, signal_handler);
     
-    if (argc > 1) config_file = argv[1];
-    if (argc > 2) input_file = argv[2];
-    if (argc > 3) tracks_file = argv[3];
+    // Парсим аргументы
+    CombinedConfig config = parse_arguments(argc, argv);
     
-    // Загружаем конфигурацию
-    ConfigLoader loader;
-    SystemConfig system_config;
-    if (!loader.load(config_file, system_config)) {
-        std::cerr << "Cannot load config file: " << config_file << std::endl;
+    // Создаем и запускаем процессор
+    RadarProcessor processor;
+    if (!processor.init(config)) {
+        VRL_LOG_ERROR(modules::MAIN, "Failed to initialize processor");
         return 1;
     }
-
-    // Настраиваем логгер из конфигурации
-    auto& logger = Logger::instance();
-    logger.configure(system_config.logging);
-
-    VRL_LOG_INFO(modules::MAIN, "=== Step 2+3: Combined Plot Formation and Track Processing ===");
-    VRL_LOG_DEBUG(modules::MAIN, "Config: " + config_file);
-    VRL_LOG_DEBUG(modules::MAIN, "Input: " + input_file);
-    VRL_LOG_DEBUG(modules::MAIN, "Tracks output: " + tracks_file);
-        
-    ProcessingConfig config = load_config(config_file);
-    config.input_file = input_file;
-    config.tracks_file = tracks_file;
     
-    VRL_LOG_INFO(modules::MAIN, "Initializing tracker...");
+    processor.run();
+    processor.shutdown();
     
-    TrackerConfig tracker_config;
-    tracker_config.min_hits_to_confirm = config.min_hits_to_confirm;
-    tracker_config.max_coast_count = config.max_coast_count;
-    tracker_config.max_gate_distance = config.max_gate_distance_km * 1000.0;
-    tracker_config.max_gate_azimuth = config.max_gate_azimuth_deg;
-    tracker_config.enable_rbs_tracking = true;
-    tracker_config.enable_uvd_tracking = true;
-    tracker_config.debug_mode = config.debug_mode;
-    tracker_config.process_noise = config.process_noise;
-    tracker_config.measurement_noise = config.measurement_noise;
-    
-    std::ifstream in(config.input_file);
-    if (!in.is_open()) {
-        VRL_LOG_ERROR(modules::MAIN, "Cannot open " + config.input_file);
-        return 1;
-    }
-    VRL_LOG_DEBUG(modules::MAIN, "Input file opened successfully");
-    
-    std::ofstream out_tracks(config.tracks_file);
-    out_tracks << "# Tracks (from combined processing)\n";
-    out_tracks << "# time_sec,track_id,x_km,y_km,speed_km_s,course_deg,code_data,altitude,altitude_valid,confidence,hit_count,state,type,code_reliable,alt_reliable\n";
-    out_tracks << "# " << std::string(80, '-') << "\n";
-    VRL_LOG_DEBUG(modules::MAIN, "Tracks output file: " + config.tracks_file);
-    
-    std::ofstream out_plots;
-    bool write_plots = !config.plots_file.empty();
-    if (write_plots) {
-        out_plots.open(config.plots_file);
-        if (out_plots.is_open()) {
-            out_plots << "# Plots (from combined processing)\n";
-            out_plots << "# time_sec,azimuth_deg,range_km,x_km,y_km,type,code_data,altitude,altitude_valid,altitude_attempts,spi,reply_count,garble_count,azimuth_span_deg,range_span_km,first_reply_time,last_reply_time\n";
-            out_plots << "# " << std::string(80, '-') << "\n";
-            VRL_LOG_INFO(modules::MAIN, "Writing plots to: " + config.plots_file);
-        } else {
-            VRL_LOG_WARN(modules::MAIN, "Cannot open plots file: " + config.plots_file);
-            write_plots = false;
-        }
-    }
-    
-    OnlineClusterer rbs_clusterer(30.0, 
-                                   config.range_threshold_bins, 
-                                   config.azimuth_threshold_bins, 
-                                   config.completion_gap_bins);
-    OnlineClusterer uvd_clusterer(60.0, 
-                                   config.range_threshold_bins * 2, 
-                                   config.azimuth_threshold_bins * 2, 
-                                   config.completion_gap_bins);
-    
-    TrackManager rbs_tracker(tracker_config);
-    TrackManager uvd_tracker(tracker_config);
-    
-    std::map<uint64_t, int> last_hit_rbs;
-    std::map<uint64_t, int> last_hit_uvd;
-    std::map<uint64_t, PlotData> prev_rbs_plot;
-    std::map<uint64_t, PlotData> prev_uvd_plot;
-    
-    std::string line;
-    int line_num = 0;
-    int rbs_replies_processed = 0;
-    int uvd_replies_processed = 0;
-    int plots_generated = 0;
-    int sector_count = 0;
-    
-    VRL_LOG_INFO(modules::MAIN, "Starting processing...");
-    
-    while (std::getline(in, line)) {
-        line_num++;
-        if (line_num % 10000 == 0) {
-            VRL_LOG_DEBUG(modules::MAIN, "Processed " + std::to_string(line_num) + " lines");
-        }
-        
-        if (line.empty() || line[0] == '#') continue;
-        
-        Reply reply;
-        if (!parse_reply_line(line, reply)) continue;
-        
-        if (reply.type == "SECTOR") {
-            sector_count++;
-            
-            rbs_clusterer.process_sector(reply.azimuth);
-            uvd_clusterer.process_sector(reply.azimuth);
-            
-            auto rbs_plots = rbs_clusterer.get_completed_plots();
-            for (const auto& plot : rbs_plots) {
-                if (write_plots && out_plots.is_open()) {
-                    write_plots_to_file({plot}, out_plots);
-                }
-                process_plot_in_tracker(plot, rbs_tracker, last_hit_rbs, prev_rbs_plot, 
-                                       out_tracks, "RBS", 0, config.revolution_time);
-                plots_generated++;
-            }
-            
-            auto uvd_plots = uvd_clusterer.get_completed_plots();
-            for (const auto& plot : uvd_plots) {
-                if (write_plots && out_plots.is_open()) {
-                    write_plots_to_file({plot}, out_plots);
-                }
-                process_plot_in_tracker(plot, uvd_tracker, last_hit_uvd, prev_uvd_plot,
-                                       out_tracks, "UVD", 1000, config.revolution_time);
-                plots_generated++;
-            }
-            
-        } else if (reply.type == "RBS_A" || reply.type == "RBS_C") {
-            rbs_clusterer.add_reply(reply);
-            rbs_replies_processed++;
-            
-        } else if (reply.type == "UVD_DATA" || reply.type == "UVD_ALT") {
-            uvd_clusterer.add_reply(reply);
-            uvd_replies_processed++;
-        }
-    }
-    
-    VRL_LOG_INFO(modules::MAIN, "Processing complete. Finalizing remaining clusters...");
-    
-    rbs_clusterer.finish_all();
-    auto final_rbs_plots = rbs_clusterer.get_final_plots();
-    for (const auto& plot : final_rbs_plots) {
-        if (write_plots && out_plots.is_open()) {
-            write_plots_to_file({plot}, out_plots);
-        }
-        process_plot_in_tracker(plot, rbs_tracker, last_hit_rbs, prev_rbs_plot,
-                               out_tracks, "RBS", 0, config.revolution_time);
-        plots_generated++;
-    }
-    
-    uvd_clusterer.finish_all();
-    auto final_uvd_plots = uvd_clusterer.get_final_plots();
-    for (const auto& plot : final_uvd_plots) {
-        if (write_plots && out_plots.is_open()) {
-            write_plots_to_file({plot}, out_plots);
-        }
-        process_plot_in_tracker(plot, uvd_tracker, last_hit_uvd, prev_uvd_plot,
-                               out_tracks, "UVD", 1000, config.revolution_time);
-        plots_generated++;
-    }
-    
-    out_tracks.close();
-    if (write_plots && out_plots.is_open()) {
-        out_plots.close();
-    }
-    in.close();
-    
-    VRL_LOG_INFO(modules::MAIN, "=== Results ===");
-    VRL_LOG_INFO(modules::MAIN, "Processed " + std::to_string(rbs_replies_processed) + 
-                 " RBS replies and " + std::to_string(uvd_replies_processed) + " UVD replies");
-    VRL_LOG_INFO(modules::MAIN, "Processed " + std::to_string(sector_count) + " sectors");
-    VRL_LOG_INFO(modules::MAIN, "Generated " + std::to_string(plots_generated) + " plots");
-    
-    auto rbs_tracks = rbs_tracker.get_active_tracks();
-    auto uvd_tracks = uvd_tracker.get_active_tracks();
-    
-    int rbs_confirmed = 0, uvd_confirmed = 0;
-    for (const auto& t : rbs_tracks) {
-        if (t.state == TrackState::ACTIVE) rbs_confirmed++;
-    }
-    for (const auto& t : uvd_tracks) {
-        if (t.state == TrackState::ACTIVE) uvd_confirmed++;
-    }
-    
-    VRL_LOG_INFO(modules::MAIN, "RBS tracks: " + std::to_string(rbs_tracks.size()) + 
-                 " (confirmed: " + std::to_string(rbs_confirmed) + ")");
-    VRL_LOG_INFO(modules::MAIN, "UVD tracks: " + std::to_string(uvd_tracks.size()) + 
-                 " (confirmed: " + std::to_string(uvd_confirmed) + ")");
-    VRL_LOG_INFO(modules::MAIN, "Tracks written to " + config.tracks_file);
-    if (write_plots) {
-        VRL_LOG_INFO(modules::MAIN, "Plots written to " + config.plots_file);
-    }
-    
-    VRL_LOG_INFO(modules::MAIN, "=== Done ===");
+    VRL_LOG_INFO(modules::MAIN, "Done.");
     return 0;
 }

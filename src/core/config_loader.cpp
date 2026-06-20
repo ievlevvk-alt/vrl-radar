@@ -602,7 +602,60 @@ bool ConfigLoader::parse_config(const json& j, SystemConfig& config) {
                 }
             }
         }
-        
+
+        // ===== CLUSTERER =====
+        if (j.contains("clusterer") && j["clusterer"].is_object()) {
+            const auto& c = j["clusterer"];
+            
+            // Тип кластеризатора
+            std::string type_str;
+            if (safe_get_value(c, "type", type_str)) {
+                if (type_str == "dbscan") {
+                    config.clusterer.type = ClustererConfig::Type::DBSCAN;
+                } else if (type_str == "legacy") {
+                    config.clusterer.type = ClustererConfig::Type::LEGACY;
+                } else {
+                    VRL_LOG_WARN(modules::CONFIG, "Unknown clusterer type: " + type_str + 
+                                 ", using dbscan");
+                    config.clusterer.type = ClustererConfig::Type::DBSCAN;
+                }
+            }
+            
+            // Параметры DBSCAN
+            safe_get_value(c, "max_range_gap", config.clusterer.max_range_gap,
+                          is_positive_int, "must be >= 1");
+            safe_get_value(c, "min_points", config.clusterer.min_points,
+                          is_positive_int, "must be >= 1");
+            safe_get_value(c, "azimuth_gap_coefficient", config.clusterer.azimuth_gap_coefficient,
+                          is_positive, "must be > 0");
+            
+            // Параметры Legacy
+            safe_get_value(c, "max_gap_azimuth", config.clusterer.max_gap_azimuth,
+                          is_positive_int, "must be >= 1");
+            safe_get_value(c, "range_window", config.clusterer.range_window,
+                          is_positive_int, "must be >= 1");
+            
+            // Общие параметры
+            safe_get_value(c, "max_revolutions_no_update", config.clusterer.max_revolutions_no_update,
+                          is_positive_int, "must be >= 1");
+            
+            // ИСПРАВЛЕНО: читаем max_active_clusters без валидатора
+            // Так же как читаются другие числовые поля без валидации
+            if (c.contains("max_active_clusters")) {
+                try {
+                    if (c["max_active_clusters"].is_number()) {
+                        config.clusterer.max_active_clusters = c["max_active_clusters"].get<size_t>();
+                    } else if (c["max_active_clusters"].is_string()) {
+                        config.clusterer.max_active_clusters = std::stoul(c["max_active_clusters"].get<std::string>());
+                    }
+                } catch (const std::exception& e) {
+                    VRL_LOG_WARN(modules::CONFIG, "Failed to parse max_active_clusters: " + 
+                                 std::string(e.what()) + ", using default 100");
+                    config.clusterer.max_active_clusters = 100;
+                }
+            }
+        }
+
         return true;
     } catch (const std::exception& e) {
         VRL_LOG_ERROR(modules::CONFIG, "Failed to parse config: " + std::string(e.what()));
@@ -766,6 +819,32 @@ bool ConfigLoader::validate(const SystemConfig& config, std::string& error) cons
         return false;
     }
     
+    // Проверка параметров кластеризации
+    if (config.clusterer.max_active_clusters < 1) {
+        error = "max_active_clusters must be >= 1";
+        return false;
+    }
+    
+    if (config.clusterer.max_revolutions_no_update < 1) {
+        error = "max_revolutions_no_update must be >= 1";
+        return false;
+    }
+    
+    if (config.clusterer.max_range_gap < 1) {
+        error = "max_range_gap must be >= 1";
+        return false;
+    }
+    
+    if (config.clusterer.min_points < 1) {
+        error = "min_points must be >= 1";
+        return false;
+    }
+    
+    if (config.clusterer.azimuth_gap_coefficient <= 0) {
+        error = "azimuth_gap_coefficient must be > 0";
+        return false;
+    }
+    
     return true;
 }
 
@@ -926,6 +1005,21 @@ json ConfigLoader::to_json(const SystemConfig& config) {
         t["initial_y_km"] = target.initial_y_km;
         j["uvd_targets"].push_back(t);
     }
+
+    // ===== CLUSTERER =====
+    std::string type_str = (config.clusterer.type == ClustererConfig::Type::DBSCAN) ? 
+                           "dbscan" : "legacy";
+    
+    j["clusterer"] = {
+        {"type", type_str},
+        {"max_range_gap", config.clusterer.max_range_gap},
+        {"min_points", config.clusterer.min_points},
+        {"azimuth_gap_coefficient", config.clusterer.azimuth_gap_coefficient},
+        {"max_gap_azimuth", config.clusterer.max_gap_azimuth},
+        {"range_window", config.clusterer.range_window},
+        {"max_revolutions_no_update", config.clusterer.max_revolutions_no_update},
+        {"max_active_clusters", config.clusterer.max_active_clusters}
+    };    
     
     return j;
 }

@@ -3,7 +3,7 @@
 
 #include "types.h"
 #include "replies.h"
-#include "logging_config.h"  // <-- ВМЕСТО logger.h
+#include "logging_config.h"
 #include <string>
 #include <vector>
 #include <map>
@@ -74,6 +74,33 @@ struct GeneratedTarget {
 };
 
 // ============================================================================
+// КОНФИГУРАЦИЯ КЛАСТЕРИЗАЦИИ
+// ============================================================================
+
+struct ClustererConfig {
+    // Тип кластеризатора
+    enum class Type {
+        LEGACY,      // Старый алгоритм
+        DBSCAN       // Новый DBSCAN алгоритм
+    };
+    
+    Type type{Type::DBSCAN};  // По умолчанию используем DBSCAN
+    
+    // Параметры для LEGACY
+    int max_gap_azimuth{8};
+    int range_window{30};
+    
+    // Параметры для DBSCAN
+    int max_range_gap{3};
+    int min_points{2};
+    double azimuth_gap_coefficient{1.2};
+    
+    // Общие параметры
+    int max_revolutions_no_update{5};
+    size_t max_active_clusters{100};
+};
+
+// ============================================================================
 // SYSTEM CONFIG
 // ============================================================================
 
@@ -116,6 +143,7 @@ struct SystemConfig {
     SimulatorConfig simulator;
     TrackerConfig tracker;
     LoggingConfig logging;
+    ClustererConfig clusterer;  // <-- НОВОЕ ПОЛЕ
     
     struct ProcessingConfig {
         int max_gap_azimuth{8};
