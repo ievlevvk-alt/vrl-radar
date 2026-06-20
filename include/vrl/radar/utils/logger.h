@@ -101,16 +101,18 @@ inline LogLevel string_to_log_level(const std::string& level) {
 // ============================================================================
 
 namespace modules {
-    constexpr const char* CONFIG     = "Config";
-    constexpr const char* TRACKER    = "Tracker";
-    constexpr const char* CLUSTER    = "Cluster";
-    constexpr const char* SIMULATOR  = "Simulator";
-    constexpr const char* PLAYER     = "Player";
-    constexpr const char* GARBLING   = "Garbling";
-    constexpr const char* KALMAN     = "Kalman";
-    constexpr const char* UTILS      = "Utils";
-    constexpr const char* MAIN       = "Main";
-    constexpr const char* PROCESSING = "Processing";
+    const std::string MAIN      = "Main";
+    const std::string CONFIG    = "Config";
+    const std::string SIMULATOR = "Simulator";
+    const std::string TRACKER   = "Tracker";
+    const std::string CLUSTER   = "Cluster";
+    const std::string GARBLING  = "Garbling";
+    const std::string KALMAN    = "Kalman";
+    const std::string PROCESSING = "Processing";
+    const std::string UTILS     = "Utils";
+    const std::string PLAYER    = "Player";
+    const std::string CORE      = "Core";     // <-- НОВЫЙ
+    const std::string DISPLAY   = "Display";  // <-- НОВЫЙ
 }
 
 // ============================================================================

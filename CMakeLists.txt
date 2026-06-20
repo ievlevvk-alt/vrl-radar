@@ -15,6 +15,9 @@ option(ENABLE_VERBOSE_LOGGING "Enable verbose debug logging" OFF)
 option(ENABLE_TRACE_LOGGING "Enable TRACE level logging (very verbose)" OFF)
 option(ENABLE_DEBUG_LOGGING "Enable DEBUG level logging" ON)
 
+# Новая опция для размера буфера точек
+set(POINT_BUFFER_SIZE 65536 CACHE STRING "Size of point buffer for storage")
+
 # Устанавливаем режим сборки по умолчанию
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE "Debug" CACHE STRING "Build type" FORCE)

@@ -362,3 +362,28 @@ add_test(NAME test_dbscan_clusterer
     COMMAND test_dbscan_clusterer
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/tests
 )
+
+# НОВЫЙ ТЕСТ: PointBuffer
+add_executable(test_point_buffer
+    test_point_buffer.cpp
+)
+
+target_link_libraries(test_point_buffer
+    vrl_radar
+    GTest::gtest_main
+)
+
+target_compile_definitions(test_point_buffer
+    PRIVATE
+        $<$<BOOL:${ENABLE_VERBOSE_LOGGING}>:ENABLE_VERBOSE_LOGGING>
+)
+
+set_target_properties(test_point_buffer PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests"
+)
+
+add_test(NAME test_point_buffer 
+    COMMAND test_point_buffer
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/tests
+)
+

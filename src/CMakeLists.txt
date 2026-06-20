@@ -3,8 +3,9 @@
 add_library(vrl_radar STATIC
     core/config.cpp
     core/config_loader.cpp
+    core/point_buffer.cpp           # <-- НОВЫЙ ФАЙЛ
     processing/cluster.cpp
-    processing/dbscan_clusterer.cpp        # <-- НОВЫЙ ФАЙЛ
+    processing/dbscan_clusterer.cpp
     processing/garbling_solver.cpp
     processing/kalman_filter.cpp
     processing/extended_kalman_filter.cpp
@@ -19,6 +20,7 @@ add_library(vrl_radar STATIC
     utils/logger.cpp
     utils/utils.cpp
 )
+
 
 target_link_libraries(vrl_radar
     ${SDL2_LIBRARIES}
