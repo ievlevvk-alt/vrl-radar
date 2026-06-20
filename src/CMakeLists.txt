@@ -4,6 +4,7 @@ add_library(vrl_radar STATIC
     core/config.cpp
     core/config_loader.cpp
     core/point_buffer.cpp           # <-- НОВЫЙ ФАЙЛ
+    core/cluster.cpp           # <-- НОВЫЙ ФАЙЛ
     processing/cluster.cpp
     processing/dbscan_clusterer.cpp
     processing/garbling_solver.cpp
