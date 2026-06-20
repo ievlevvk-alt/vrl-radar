@@ -2,8 +2,7 @@
     "clusterer": {
         "type": "dbscan",
         "max_range_gap": 3,
-        "max_azimuth_gap": 68,
-        "min_points": 2,
+        "azimuth_gap_coefficient": 1.2,
         "max_gap_azimuth": 8,
         "range_window": 30,
         "max_revolutions_no_update": 5,

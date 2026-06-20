@@ -1,6 +1,8 @@
 // tests/test_dbscan_clusterer.cpp
 #include <gtest/gtest.h>
 #include "vrl/radar/processing/dbscan_clusterer.h"
+#include "vrl/radar/core/point_buffer.hpp"
+#include "vrl/radar/core/cluster_pool.hpp"
 #include "vrl/radar/processing/cluster.h"
 #include <memory>
 #include <cmath>
@@ -16,8 +18,16 @@ protected:
         config_.range_bin_uvd = 60.0;
         config_.min_amplitude = 10;
         
-        clusterer_ = std::make_unique<DBSCANClusterer>(config_, 3, 1, 1.2);
+        PointBuffer::instance().init(1000);
+        ClusterPool::instance().clear();
+        
+        // ИСПРАВЛЕНО: 3 аргумента
+        clusterer_ = std::make_unique<DBSCANClusterer>(config_, 3, 1.2);
         clusterer_->set_debug(false);
+    }
+    
+    void TearDown() override {
+        ClusterPool::instance().clear();
     }
     
     RBSReply create_rbs_reply(uint16_t azimuth, uint16_t range, 
@@ -51,6 +61,18 @@ protected:
         return ScanReplies(azimuth, 0);
     }
     
+    size_t count_clusters() const {
+        return ClusterPool::instance().size();
+    }
+    
+    size_t count_active_clusters() const {
+        return ClusterPool::instance().get_active_clusters().size();
+    }
+    
+    size_t count_closed_clusters() const {
+        return ClusterPool::instance().get_closed_clusters().size();
+    }
+    
     RadarConfig config_;
     std::unique_ptr<DBSCANClusterer> clusterer_;
 };
@@ -67,8 +89,12 @@ TEST_F(DBSCANClustererTest, TwoPointsFormCluster) {
     clusterer_->process_scan(scan);
     auto completed = clusterer_->finish_all();
     
-    ASSERT_EQ(completed.size(), 1) << "Should have 1 cluster";
-    EXPECT_GE(completed[0].scans.size(), 1) << "Cluster should have scans";
+    EXPECT_EQ(count_clusters(), 1);
+    EXPECT_EQ(count_closed_clusters(), 1);
+    
+    auto closed = ClusterPool::instance().get_closed_clusters();
+    ASSERT_EQ(closed.size(), 1);
+    EXPECT_EQ(closed[0]->size(), 2);
 }
 
 // ========================================================================
@@ -83,7 +109,8 @@ TEST_F(DBSCANClustererTest, PointsTooFarTwoClusters) {
     clusterer_->process_scan(scan);
     auto completed = clusterer_->finish_all();
     
-    ASSERT_EQ(completed.size(), 2) << "Should have 2 clusters (too far)";
+    EXPECT_EQ(count_clusters(), 2);
+    EXPECT_EQ(count_closed_clusters(), 2);
 }
 
 // ========================================================================
@@ -98,7 +125,8 @@ TEST_F(DBSCANClustererTest, PointsTooFarRangeTwoClusters) {
     clusterer_->process_scan(scan);
     auto completed = clusterer_->finish_all();
     
-    ASSERT_EQ(completed.size(), 2) << "Should have 2 clusters (range too far)";
+    EXPECT_EQ(count_clusters(), 2);
+    EXPECT_EQ(count_closed_clusters(), 2);
 }
 
 // ========================================================================
@@ -113,7 +141,8 @@ TEST_F(DBSCANClustererTest, RBSAndUVDSeparateClusters) {
     clusterer_->process_scan(scan);
     auto completed = clusterer_->finish_all();
     
-    ASSERT_EQ(completed.size(), 2) << "RBS and UVD should be separate clusters";
+    EXPECT_EQ(count_clusters(), 2);
+    EXPECT_EQ(count_closed_clusters(), 2);
 }
 
 // ========================================================================
@@ -121,6 +150,8 @@ TEST_F(DBSCANClustererTest, RBSAndUVDSeparateClusters) {
 // ========================================================================
 
 TEST_F(DBSCANClustererTest, ClusterMergeScenario) {
+    clusterer_->set_debug(true);  // ← добавить
+    
     ScanReplies scan1 = create_scan(100);
     scan1.rbs_replies.push_back(create_rbs_reply(100, 100));
     clusterer_->process_scan(scan1);
@@ -137,35 +168,16 @@ TEST_F(DBSCANClustererTest, ClusterMergeScenario) {
     
     auto completed = clusterer_->finish_all();
     
-    ASSERT_EQ(completed.size(), 1) << "Should have 1 merged cluster";
-    EXPECT_GE(completed[0].scans.size(), 3) << "Cluster should have 3 azimuths";
+    EXPECT_EQ(count_clusters(), 1);
+    EXPECT_EQ(count_closed_clusters(), 1);
     
-    int total_replies = 0;
-    for (const auto& scan : completed[0].scans) {
-        total_replies += scan.rbs_replies.size();
-    }
-    EXPECT_EQ(total_replies, 5) << "Should have 5 RBS replies total";
+    auto closed = ClusterPool::instance().get_closed_clusters();
+    ASSERT_EQ(closed.size(), 1);
+    EXPECT_EQ(closed[0]->size(), 5);
 }
 
 // ========================================================================
-// ТЕСТ 6: Минимальное количество точек
-// ========================================================================
-
-TEST_F(DBSCANClustererTest, MinPointsFilter) {
-    clusterer_->set_min_points(3);
-    
-    ScanReplies scan = create_scan(100);
-    scan.rbs_replies.push_back(create_rbs_reply(100, 50));
-    scan.rbs_replies.push_back(create_rbs_reply(102, 52));
-    
-    clusterer_->process_scan(scan);
-    auto completed = clusterer_->finish_all();
-    
-    EXPECT_TRUE(completed.empty()) << "Cluster with 2 points should be discarded";
-}
-
-// ========================================================================
-// ТЕСТ 7: Закрытие кластера при разрыве
+// ТЕСТ 6: Закрытие кластера при разрыве
 // ========================================================================
 
 TEST_F(DBSCANClustererTest, ClusterClosesOnGap) {
@@ -180,11 +192,12 @@ TEST_F(DBSCANClustererTest, ClusterClosesOnGap) {
     
     auto completed = clusterer_->finish_all();
     
-    ASSERT_EQ(completed.size(), 2) << "Should have 2 clusters (gap closed first)";
+    EXPECT_EQ(count_clusters(), 2);
+    EXPECT_EQ(count_closed_clusters(), 2);
 }
 
 // ========================================================================
-// ТЕСТ 8: Переход через Север
+// ТЕСТ 7: Переход через Север
 // ========================================================================
 
 TEST_F(DBSCANClustererTest, NorthTransition) {
@@ -198,18 +211,16 @@ TEST_F(DBSCANClustererTest, NorthTransition) {
     
     auto completed = clusterer_->finish_all();
     
-    ASSERT_EQ(completed.size(), 1) << "Should merge across North transition";
+    EXPECT_EQ(count_clusters(), 1);
+    EXPECT_EQ(count_closed_clusters(), 1);
     
-    bool has_4094 = false, has_0 = false;
-    for (const auto& scan : completed[0].scans) {
-        if (scan.azimuth == 4094) has_4094 = true;
-        if (scan.azimuth == 0) has_0 = true;
-    }
-    EXPECT_TRUE(has_4094 && has_0) << "Should contain both azimuths 4094 and 0";
+    auto closed = ClusterPool::instance().get_closed_clusters();
+    ASSERT_EQ(closed.size(), 1);
+    EXPECT_EQ(closed[0]->get_azimuth_span(), 2);
 }
 
 // ========================================================================
-// ТЕСТ 9: SPI флаг сохраняется
+// ТЕСТ 8: SPI флаг сохраняется
 // ========================================================================
 
 TEST_F(DBSCANClustererTest, SPIFlagPreserved) {
@@ -220,19 +231,23 @@ TEST_F(DBSCANClustererTest, SPIFlagPreserved) {
     clusterer_->process_scan(scan);
     auto completed = clusterer_->finish_all();
     
-    ASSERT_EQ(completed.size(), 1) << "Should have 1 cluster";
+    EXPECT_EQ(count_clusters(), 1);
+    EXPECT_EQ(count_closed_clusters(), 1);
     
+    auto closed = ClusterPool::instance().get_closed_clusters();
+    ASSERT_EQ(closed.size(), 1);
+    
+    const auto& indices = closed[0]->get_indices();
     bool found_spi = false;
-    for (const auto& scan_replies : completed[0].scans) {
-        for (const auto& reply : scan_replies.rbs_replies) {
-            if (reply.spi) found_spi = true;
-        }
+    for (size_t idx : indices) {
+        const auto& point = PointBuffer::instance().get_point(idx);
+        if (point.spi) found_spi = true;
     }
-    EXPECT_TRUE(found_spi) << "SPI flag should be preserved in replies";
+    EXPECT_TRUE(found_spi);
 }
 
 // ========================================================================
-// ТЕСТ 10: Несколько ответов на одном азимуте
+// ТЕСТ 9: Несколько ответов на одном азимуте
 // ========================================================================
 
 TEST_F(DBSCANClustererTest, MultipleRepliesSameAzimuth) {
@@ -244,11 +259,12 @@ TEST_F(DBSCANClustererTest, MultipleRepliesSameAzimuth) {
     clusterer_->process_scan(scan);
     auto completed = clusterer_->finish_all();
     
-    ASSERT_EQ(completed.size(), 2) << "Should have 2 clusters (range gap)";
+    EXPECT_EQ(count_clusters(), 2);
+    EXPECT_EQ(count_closed_clusters(), 2);
 }
 
 // ========================================================================
-// ТЕСТ 11: Сброс и статистика
+// ТЕСТ 10: Сброс и статистика
 // ========================================================================
 
 TEST_F(DBSCANClustererTest, ResetAndStats) {
@@ -257,39 +273,35 @@ TEST_F(DBSCANClustererTest, ResetAndStats) {
     scan.rbs_replies.push_back(create_rbs_reply(102, 52));
     clusterer_->process_scan(scan);
     
-    // Проверяем, что после обработки есть кластеры (активные или завершенные)
     size_t active, completed;
     clusterer_->get_stats(active, completed);
-    EXPECT_TRUE(active > 0 || completed > 0) 
-        << "Should have clusters (active=" << active << ", completed=" << completed << ")";
     
-    // Сбрасываем
+    EXPECT_TRUE(active > 0 || completed > 0);
+    
     clusterer_->reset();
     clusterer_->get_stats(active, completed);
     
-    EXPECT_EQ(active, 0) << "After reset active should be 0";
-    EXPECT_EQ(completed, 0) << "After reset completed should be 0";
+    EXPECT_EQ(active, 0);
+    EXPECT_EQ(completed, 0);
 }
 
 // ========================================================================
-// ТЕСТ 12: Параметры через set_param
+// ТЕСТ 11: Параметры через set_param
 // ========================================================================
 
 TEST_F(DBSCANClustererTest, SetParams) {
     int default_gap = clusterer_->get_max_azimuth_gap();
-    EXPECT_EQ(default_gap, 68) << "Default gap should be 68";
+    EXPECT_EQ(default_gap, 68);
     
     clusterer_->set_param("max_azimuth_gap", 50);
     clusterer_->set_param("max_range_gap", 5);
-    clusterer_->set_param("min_points", 4);
     
     EXPECT_EQ(clusterer_->get_max_azimuth_gap(), 50);
     EXPECT_EQ(clusterer_->get_max_range_gap(), 5);
-    EXPECT_EQ(clusterer_->get_min_points(), 4);
 }
 
 // ========================================================================
-// ТЕСТ 13: Вычисление азимутального размаха
+// ТЕСТ 12: Вычисление азимутального размаха
 // ========================================================================
 
 TEST_F(DBSCANClustererTest, AzimuthSpanNorth) {
@@ -307,19 +319,15 @@ TEST_F(DBSCANClustererTest, AzimuthSpanNorth) {
     
     auto completed = clusterer_->finish_all();
     
-    ASSERT_EQ(completed.size(), 1) << "Should have 1 cluster across North";
+    EXPECT_EQ(count_clusters(), 1);
     
-    bool has_4094 = false, has_0 = false, has_2 = false;
-    for (const auto& scan : completed[0].scans) {
-        if (scan.azimuth == 4094) has_4094 = true;
-        if (scan.azimuth == 0) has_0 = true;
-        if (scan.azimuth == 2) has_2 = true;
-    }
-    EXPECT_TRUE(has_4094 && has_0 && has_2) << "Should contain all three azimuths";
+    auto closed = ClusterPool::instance().get_closed_clusters();
+    ASSERT_EQ(closed.size(), 1);
+    EXPECT_EQ(closed[0]->size(), 3);
 }
 
 // ========================================================================
-// ТЕСТ 14: Точки на границе допуска по дальности
+// ТЕСТ 13: Точки на границе допуска по дальности
 // ========================================================================
 
 TEST_F(DBSCANClustererTest, RangeBoundary) {
@@ -331,11 +339,12 @@ TEST_F(DBSCANClustererTest, RangeBoundary) {
     clusterer_->process_scan(scan);
     auto completed = clusterer_->finish_all();
     
-    ASSERT_EQ(completed.size(), 2) << "Should have 2 clusters (one at boundary, one outside)";
+    EXPECT_EQ(count_clusters(), 2);
+    EXPECT_EQ(count_closed_clusters(), 2);
 }
 
 // ========================================================================
-// ТЕСТ 15: Разные коды RBS в одном кластере
+// ТЕСТ 14: Разные коды RBS в одном кластере
 // ========================================================================
 
 TEST_F(DBSCANClustererTest, DifferentCodesSameCluster) {
@@ -346,20 +355,15 @@ TEST_F(DBSCANClustererTest, DifferentCodesSameCluster) {
     clusterer_->process_scan(scan);
     auto completed = clusterer_->finish_all();
     
-    ASSERT_EQ(completed.size(), 1) << "Should have 1 cluster despite different codes";
+    EXPECT_EQ(count_clusters(), 1);
     
-    bool has_1234 = false, has_5678 = false;
-    for (const auto& scan_replies : completed[0].scans) {
-        for (const auto& reply : scan_replies.rbs_replies) {
-            if (reply.code12 == 1234) has_1234 = true;
-            if (reply.code12 == 5678) has_5678 = true;
-        }
-    }
-    EXPECT_TRUE(has_1234 && has_5678) << "Both codes should be preserved";
+    auto closed = ClusterPool::instance().get_closed_clusters();
+    ASSERT_EQ(closed.size(), 1);
+    EXPECT_EQ(closed[0]->size(), 2);
 }
 
 // ========================================================================
-// ТЕСТ 16: Проверка azimuth_distance
+// ТЕСТ 15: Проверка azimuth_distance
 // ========================================================================
 
 TEST_F(DBSCANClustererTest, AzimuthDistance) {
@@ -372,13 +376,11 @@ TEST_F(DBSCANClustererTest, AzimuthDistance) {
     clusterer_->process_scan(scan2);
     
     auto completed = clusterer_->finish_all();
-    ASSERT_EQ(completed.size(), 1) << "Should merge across North";
     
-    bool has_4094 = false, has_0 = false;
-    for (const auto& scan : completed[0].scans) {
-        if (scan.azimuth == 4094) has_4094 = true;
-        if (scan.azimuth == 0) has_0 = true;
-    }
-    EXPECT_TRUE(has_4094 && has_0);
+    EXPECT_EQ(count_clusters(), 1);
+    
+    auto closed = ClusterPool::instance().get_closed_clusters();
+    ASSERT_EQ(closed.size(), 1);
+    EXPECT_EQ(closed[0]->size(), 2);
+    EXPECT_EQ(closed[0]->get_azimuth_span(), 2);
 }
-

@@ -207,8 +207,6 @@ bool RadarProcessor::init(const CombinedConfig& config) {
     return true;
 }
 
-// tools/2_3_combined.cpp
-// В функции load_config() используйте ConfigLoader:
 
 bool RadarProcessor::load_config() {
     if (!config_.config_file.empty()) {
@@ -220,7 +218,6 @@ bool RadarProcessor::load_config() {
             if (system_config_.clusterer.type == ClustererConfig::Type::DBSCAN) {
                 VRL_LOG_INFO(modules::MAIN, "Clusterer: DBSCAN (range_gap=" + 
                              std::to_string(system_config_.clusterer.max_range_gap) +
-                             ", min_points=" + std::to_string(system_config_.clusterer.min_points) +
                              ", az_coeff=" + 
                              std::to_string(system_config_.clusterer.azimuth_gap_coefficient) + ")");
             } else {
@@ -274,18 +271,12 @@ bool RadarProcessor::init_simulator() {
 // ИНИЦИАЛИЗАЦИЯ ТРЕКЕРА С ВЫБОРОМ АЛГОРИТМА
 // ============================================================================
 
-// tools/2_3_combined.cpp
-// В функции init_tracker():
-
 bool RadarProcessor::init_tracker() {
-    // Используем конфигурацию из system_config_
     ClustererConfig clusterer_config = system_config_.clusterer;
     
-    // Вывод информации о выбранном алгоритме
     if (clusterer_config.type == ClustererConfig::Type::DBSCAN) {
         VRL_LOG_INFO(modules::MAIN, "Using DBSCANClusterer: range_gap=" + 
                      std::to_string(clusterer_config.max_range_gap) +
-                     ", min_points=" + std::to_string(clusterer_config.min_points) +
                      ", azimuth_coeff=" + std::to_string(clusterer_config.azimuth_gap_coefficient));
     } else {
         VRL_LOG_INFO(modules::MAIN, "Using LegacyClusterer: gap=" + 
@@ -293,13 +284,9 @@ bool RadarProcessor::init_tracker() {
                      ", window=" + std::to_string(clusterer_config.range_window));
     }
     
-    // Создаем ClusterTracker с конфигурацией
     cluster_tracker_ = std::make_unique<ClusterTracker>(clusterer_config);
-    
-    // Создаем TrackManager
     track_manager_ = std::make_unique<TrackManager>(system_config_.tracker);
     
-    // Включаем отладку если нужно
     if (config_.debug) {
         auto* clusterer = cluster_tracker_->get_clusterer();
         if (clusterer) {

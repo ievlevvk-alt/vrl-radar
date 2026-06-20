@@ -94,6 +94,22 @@ void ClusterPool::remove_cluster(size_t index) {
     VRL_LOG_DEBUG(modules::CORE, "Cluster removed, remaining: " + std::to_string(clusters_.size()));
 }
 
+// НОВЫЙ МЕТОД
+void ClusterPool::remove_cluster(Cluster* cluster) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    
+    for (size_t i = 0; i < clusters_.size(); ++i) {
+        if (clusters_[i].get() == cluster) {
+            clusters_.erase(clusters_.begin() + i);
+            VRL_LOG_DEBUG(modules::CORE, "Cluster removed by pointer, remaining: " + 
+                          std::to_string(clusters_.size()));
+            return;
+        }
+    }
+    
+    VRL_LOG_WARN(modules::CORE, "Cluster not found in pool");
+}
+
 void ClusterPool::clear() {
     std::lock_guard<std::mutex> lock(mutex_);
     

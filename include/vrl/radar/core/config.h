@@ -78,13 +78,12 @@ struct GeneratedTarget {
 // ============================================================================
 
 struct ClustererConfig {
-    // Тип кластеризатора
     enum class Type {
-        LEGACY,      // Старый алгоритм
-        DBSCAN       // Новый DBSCAN алгоритм
+        LEGACY,
+        DBSCAN
     };
     
-    Type type{Type::DBSCAN};  // По умолчанию используем DBSCAN
+    Type type{Type::DBSCAN};
     
     // Параметры для LEGACY
     int max_gap_azimuth{8};
@@ -92,13 +91,14 @@ struct ClustererConfig {
     
     // Параметры для DBSCAN
     int max_range_gap{3};
-    int min_points{2};
+    // min_points удален
     double azimuth_gap_coefficient{1.2};
     
     // Общие параметры
     int max_revolutions_no_update{5};
-    size_t max_active_clusters{100};
+    int max_active_clusters{100};
 };
+
 
 // ============================================================================
 // SYSTEM CONFIG

@@ -228,26 +228,22 @@ ClusterTracker::ClusterTracker(std::unique_ptr<IClusterer> clusterer)
 // СОЗДАНИЕ КЛАСТЕРИЗАТОРА ИЗ КОНФИГУРАЦИИ
 // ============================================================================
 
-// src/processing/cluster.cpp
-// Замените метод create_clusterer на этот:
-
 std::unique_ptr<IClusterer> ClusterTracker::create_clusterer(const ClustererConfig& config) {
     switch (config.type) {
         case ClustererConfig::Type::DBSCAN: {
+            // ИСПРАВЛЕНО: убрали min_points из сообщения
             std::string msg = "Creating DBSCANClusterer with config: range_gap=" + 
                               std::to_string(config.max_range_gap) +
-                              ", min_points=" + std::to_string(config.min_points) +
                               ", azimuth_coeff=" + std::to_string(config.azimuth_gap_coefficient);
             VRL_LOG_DEBUG(modules::CLUSTER, msg);
             
-            // Создаем RadarConfig с параметрами по умолчанию
             RadarConfig radar_config;
-            radar_config.beamwidth_deg = 5.0;  // TODO: брать из общей конфигурации
+            radar_config.beamwidth_deg = 5.0;
             
+            // ИСПРАВЛЕНО: убрали min_points (третий аргумент)
             auto clusterer = std::make_unique<DBSCANClusterer>(
                 radar_config,
                 config.max_range_gap,
-                config.min_points,
                 config.azimuth_gap_coefficient
             );
             
@@ -268,6 +264,7 @@ std::unique_ptr<IClusterer> ClusterTracker::create_clusterer(const ClustererConf
         }
     }
 }
+
 
 // ============================================================================
 // ОБНОВЛЕНИЕ КОНФИГУРАЦИИ
