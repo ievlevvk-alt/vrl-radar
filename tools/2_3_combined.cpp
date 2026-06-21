@@ -164,6 +164,7 @@ private:
 // РЕАЛИЗАЦИЯ
 // ============================================================================
 
+
 bool RadarProcessor::init(const CombinedConfig& config) {
     config_ = config;
     
@@ -183,7 +184,16 @@ bool RadarProcessor::init(const CombinedConfig& config) {
         VRL_LOG_ERROR(modules::MAIN, "Failed to load config");
         return false;
     }
+
+    // ============================================================
+    // ИНИЦИАЛИЗАЦИЯ POINT BUFFER
+    // ============================================================
+    size_t point_buffer_size = 65536;  // или из конфига
+    PointBuffer::instance().init(point_buffer_size);
+    VRL_LOG_INFO(modules::MAIN, "PointBuffer initialized with size: " + 
+                 std::to_string(point_buffer_size));
     
+
     if (!init_tracker()) {
         VRL_LOG_ERROR(modules::MAIN, "Failed to initialize tracker");
         return false;
