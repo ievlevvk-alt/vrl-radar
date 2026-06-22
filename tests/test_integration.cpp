@@ -1,211 +1,289 @@
 // tests/test_integration.cpp
 #include <gtest/gtest.h>
-#include "vrl/radar/core/point_buffer.hpp"
-#include "vrl/radar/core/cluster.hpp"
 #include "vrl/radar/core/cluster_pool.hpp"
+#include "vrl/radar/core/point_buffer.hpp"
+#include "vrl/radar/processing/dbscan_clusterer.h"
+#include <vector>
+#include <memory>
+#include <iostream>
 
 using namespace vrl::radar;
 
 class IntegrationTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        PointBuffer::instance().init(100);
+        PointBuffer::instance().init(1000);
         ClusterPool::instance().clear();
+        
+        config.range_bin_rbs = 30.0;
+        config.range_bin_uvd = 60.0;
+        config.beamwidth_deg = 5.0;
+        config.min_amplitude = 10;
+        
+        clusterer = std::make_unique<DBSCANClusterer>(config, 3, 1.2);
+        clusterer->set_debug(false);
     }
     
-    size_t add_point(uint16_t azimuth, uint16_t range, bool is_rbs = true) {
-        StoredPoint p;
-        p.azimuth = azimuth;
-        p.range = range;
-        p.is_rbs = is_rbs;
-        p.amplitude = 100;
-        return PointBuffer::instance().add_point(p);
+    void TearDown() override {
+        ClusterPool::instance().clear();
+        clusterer.reset();
     }
+    
+    size_t count_active_clusters() const {
+        return ClusterPool::instance().count_active_clusters();
+    }
+    
+    size_t count_closed_clusters() const {
+        return ClusterPool::instance().count_closed_clusters();
+    }
+    
+    size_t count_total_clusters() const {
+        return ClusterPool::instance().size();
+    }
+    
+    std::vector<const Cluster*> get_closed_clusters() const {
+        std::vector<const Cluster*> result;
+        auto clusters = ClusterPool::instance().get_all_clusters();
+        for (Cluster* cluster : clusters) {
+            if (cluster && cluster->is_closed()) {
+                result.push_back(cluster);
+            }
+        }
+        return result;
+    }
+    
+    RadarConfig config;
+    std::unique_ptr<DBSCANClusterer> clusterer;
+    
+    static constexpr int AZIMUTH_BINS = 4096;
 };
 
-// ============================================================
-// ТЕСТ 1: Полный цикл жизни кластера
-// ============================================================
-
 TEST_F(IntegrationTest, FullClusterLifecycle) {
-    // 1. Добавляем точки в буфер
-    size_t idx1 = add_point(100, 50, true);   // RBS
-    size_t idx2 = add_point(102, 52, true);   // RBS
-    size_t idx3 = add_point(105, 55, false);  // UVD
+    auto& pool = ClusterPool::instance();
+    auto& buffer = PointBuffer::instance();
     
-    // 2. Создаем кластер через пул
-    Cluster& cluster = ClusterPool::instance().create_cluster();
-    EXPECT_EQ(ClusterPool::instance().size(), 1);
-    EXPECT_TRUE(cluster.is_empty());
-    EXPECT_FALSE(cluster.is_closed());
+    std::vector<StoredPoint> points;
+    for (int i = 0; i < 5; ++i) {
+        StoredPoint point;
+        point.azimuth = 100 + i * 5;
+        point.range = 50 + i * 2;
+        point.is_rbs = true;
+        point.amplitude = 100;
+        point.code12 = 0x1234;
+        point.spi = (i == 2);
+        points.push_back(point);
+    }
     
-    // 3. Добавляем точки в кластер
-    cluster.add_point(idx1);
-    cluster.add_point(idx2);
-    cluster.add_point(idx3);
+    for (const auto& point : points) {
+        ScanReplies scan(point.azimuth, 0);
+        RBSReply reply;
+        reply.azimuth = point.azimuth;
+        reply.range = point.range;
+        reply.code12 = point.code12;
+        reply.spi = point.spi;
+        reply.ether_amplitudes[0] = 100;
+        reply.ether_amplitudes[14] = 100;
+        scan.rbs_replies.push_back(reply);
+        clusterer->process_scan(scan);
+    }
     
-    EXPECT_EQ(cluster.size(), 3);
-    EXPECT_FALSE(cluster.is_empty());
+    EXPECT_EQ(count_active_clusters(), 1);
     
-    // 4. Проверяем статистику
-    EXPECT_EQ(cluster.get_min_range(), 50);
-    EXPECT_EQ(cluster.get_max_range(), 55);
-    EXPECT_EQ(cluster.get_azimuth_span(), 5);  // 105 - 100 = 5
-    EXPECT_TRUE(cluster.has_rbs());
-    EXPECT_TRUE(cluster.has_uvd());
-    EXPECT_TRUE(cluster.is_mixed());
+    clusterer->close_expired_clusters(200);
     
-    // 5. Проверяем порядок точек
-    const auto& indices = cluster.get_indices();
-    ASSERT_EQ(indices.size(), 3);
-    EXPECT_EQ(indices[0], idx1);
-    EXPECT_EQ(indices[1], idx2);
-    EXPECT_EQ(indices[2], idx3);
+    EXPECT_EQ(count_active_clusters(), 0);
+    EXPECT_EQ(count_closed_clusters(), 1);
     
-    // 6. Закрываем кластер
-    cluster.close();
-    EXPECT_TRUE(cluster.is_closed());
-    
-    // 7. Проверяем, что кластер в списке закрытых
-    auto closed = ClusterPool::instance().get_closed_clusters();
+    auto closed = get_closed_clusters();
     ASSERT_EQ(closed.size(), 1);
-    EXPECT_EQ(closed[0], &cluster);
+    
+    const Cluster* cluster = closed[0];
+    EXPECT_EQ(cluster->size(), 5);
+    EXPECT_TRUE(cluster->has_rbs());
+    EXPECT_FALSE(cluster->has_uvd());
+    EXPECT_EQ(cluster->get_min_range(), 50);
+    EXPECT_EQ(cluster->get_max_range(), 58);
+    EXPECT_TRUE(cluster->is_closed());
+    
+    const auto& indices = cluster->get_indices();
+    bool has_spi = false;
+    for (size_t idx : indices) {
+        const auto& point = buffer.get_point(idx);
+        if (point.spi) {
+            has_spi = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(has_spi);
 }
-
-// ============================================================
-// ТЕСТ 2: Несколько кластеров
-// ============================================================
 
 TEST_F(IntegrationTest, MultipleClusters) {
-    // Создаем точки
-    size_t idx1 = add_point(100, 50);
-    size_t idx2 = add_point(102, 52);
-    size_t idx3 = add_point(200, 60);
-    size_t idx4 = add_point(202, 62);
+    std::vector<std::pair<uint16_t, uint16_t>> cluster1 = {
+        {100, 50}, {105, 52}, {110, 54}
+    };
     
-    // Кластер 1 (RBS)
-    Cluster& c1 = ClusterPool::instance().create_cluster();
-    c1.add_point(idx1);
-    c1.add_point(idx2);
-    c1.close();
+    std::vector<std::pair<uint16_t, uint16_t>> cluster2 = {
+        {300, 80}, {305, 82}, {310, 84}
+    };
     
-    // Кластер 2 (UVD)
-    Cluster& c2 = ClusterPool::instance().create_cluster();
-    c2.add_point(idx3);
-    c2.add_point(idx4);
-    c2.close();
+    for (const auto& [az, range] : cluster1) {
+        ScanReplies scan(az, 0);
+        RBSReply reply;
+        reply.azimuth = az;
+        reply.range = range;
+        reply.code12 = 0x1234;
+        reply.spi = false;
+        reply.ether_amplitudes[0] = 100;
+        reply.ether_amplitudes[14] = 100;
+        scan.rbs_replies.push_back(reply);
+        clusterer->process_scan(scan);
+    }
     
-    EXPECT_EQ(ClusterPool::instance().size(), 2);
+    for (const auto& [az, range] : cluster2) {
+        ScanReplies scan(az, 0);
+        RBSReply reply;
+        reply.azimuth = az;
+        reply.range = range;
+        reply.code12 = 0x5678;
+        reply.spi = false;
+        reply.ether_amplitudes[0] = 100;
+        reply.ether_amplitudes[14] = 100;
+        scan.rbs_replies.push_back(reply);
+        clusterer->process_scan(scan);
+    }
     
-    auto closed = ClusterPool::instance().get_closed_clusters();
-    ASSERT_EQ(closed.size(), 2);
-    
-    EXPECT_EQ(closed[0]->get_min_range(), 50);
-    EXPECT_EQ(closed[1]->get_min_range(), 60);
+    EXPECT_EQ(count_total_clusters(), 2);
+    EXPECT_EQ(count_active_clusters(), 1);
+    EXPECT_EQ(count_closed_clusters(), 1);
 }
 
-// ============================================================
-// ТЕСТ 3: Удаление точек из кластера
-// ============================================================
-
-TEST_F(IntegrationTest, RemovePointsFromCluster) {
-    size_t idx1 = add_point(100, 50);
-    size_t idx2 = add_point(102, 52);
-    size_t idx3 = add_point(104, 54);
+TEST_F(IntegrationTest, MixedRBSAndUVD) {
+    std::vector<std::pair<uint16_t, uint16_t>> points = {
+        {100, 50}, {105, 52}, {110, 54}
+    };
     
-    Cluster& cluster = ClusterPool::instance().create_cluster();
-    cluster.add_point(idx1);
-    cluster.add_point(idx2);
-    cluster.add_point(idx3);
+    for (const auto& [az, range] : points) {
+        ScanReplies scan(az, 0);
+        RBSReply reply;
+        reply.azimuth = az;
+        reply.range = range;
+        reply.code12 = 0x1234;
+        reply.spi = false;
+        reply.ether_amplitudes[0] = 100;
+        reply.ether_amplitudes[14] = 100;
+        scan.rbs_replies.push_back(reply);
+        clusterer->process_scan(scan);
+    }
     
-    EXPECT_EQ(cluster.size(), 3);
-    EXPECT_EQ(cluster.get_min_range(), 50);
-    EXPECT_EQ(cluster.get_max_range(), 54);
-    EXPECT_EQ(cluster.get_azimuth_span(), 4);
+    for (const auto& [az, range] : points) {
+        ScanReplies scan(az + 2, 0);
+        UVDReply reply;
+        reply.azimuth = az + 2;
+        reply.range = range + 5;
+        reply.data20 = 0x12345;
+        reply.is_valid = true;
+        reply.error_mask = 0;
+        reply.ether_amplitudes[0] = 100;
+        reply.ether_amplitudes[40] = 100;
+        scan.uvd_replies.push_back(reply);
+        clusterer->process_scan(scan);
+    }
     
-    // Удаляем точку по позиции 1 (idx2)
-    cluster.remove_points({1});
+    EXPECT_EQ(count_total_clusters(), 2);
+    EXPECT_EQ(count_active_clusters(), 1);
+    EXPECT_EQ(count_closed_clusters(), 1);
     
-    EXPECT_EQ(cluster.size(), 2);
-    EXPECT_EQ(cluster.get_min_range(), 50);
-    EXPECT_EQ(cluster.get_max_range(), 54);
-    EXPECT_EQ(cluster.get_azimuth_span(), 4);
+    auto closed = get_closed_clusters();
+    EXPECT_EQ(closed.size(), 1);
+    if (!closed.empty()) {
+        const Cluster* cluster = closed[0];
+        EXPECT_TRUE(cluster->has_rbs());
+        EXPECT_FALSE(cluster->has_uvd());
+    }
     
-    const auto& indices = cluster.get_indices();
-    ASSERT_EQ(indices.size(), 2);
-    EXPECT_EQ(indices[0], idx1);
-    EXPECT_EQ(indices[1], idx3);
+    auto clusters = ClusterPool::instance().get_all_clusters();
+    for (Cluster* cluster : clusters) {
+        if (cluster && !cluster->is_closed()) {
+            EXPECT_TRUE(cluster->has_uvd());
+            EXPECT_FALSE(cluster->has_rbs());
+        }
+    }
 }
-
-// ============================================================
-// ТЕСТ 4: Переход через Север
-// ============================================================
-
-TEST_F(IntegrationTest, NorthTransition) {
-    size_t idx1 = add_point(4094, 50);
-    size_t idx2 = add_point(0, 55);
-    
-    Cluster& cluster = ClusterPool::instance().create_cluster();
-    cluster.add_point(idx1);
-    cluster.add_point(idx2);
-    
-    EXPECT_EQ(cluster.get_azimuth_span(), 2);
-}
-
-// ============================================================
-// ТЕСТ 5: Активные и закрытые кластеры в пуле
-// ============================================================
 
 TEST_F(IntegrationTest, ActiveAndClosedInPool) {
-    // Создаем 3 кластера
-    Cluster& c1 = ClusterPool::instance().create_cluster();
-    Cluster& c2 = ClusterPool::instance().create_cluster();
-    Cluster& c3 = ClusterPool::instance().create_cluster();
+    auto& pool = ClusterPool::instance();
+    auto& buffer = PointBuffer::instance();
     
-    // Добавляем точки
-    size_t idx1 = add_point(100, 50);
-    size_t idx2 = add_point(200, 60);
-    size_t idx3 = add_point(300, 70);
+    std::vector<uint64_t> ids;
     
-    c1.add_point(idx1);
-    c2.add_point(idx2);
-    c3.add_point(idx3);
+    for (int i = 0; i < 5; ++i) {
+        StoredPoint point;
+        point.azimuth = 10 + i * 20;
+        point.range = 50 + i * 10;
+        point.is_rbs = true;
+        point.amplitude = 100;
+        size_t idx = buffer.add_point(point);
+        
+        uint64_t id = pool.create_cluster();
+        ids.push_back(id);
+        
+        Cluster* cluster = pool.get_cluster(id);
+        cluster->add_point(idx);
+        
+        if (i % 2 == 0) {
+            pool.close_cluster(id, 0);
+        }
+    }
     
-    // Закрываем c1 и c3
-    c1.close();
-    c3.close();
+    EXPECT_EQ(count_total_clusters(), 5);
+    EXPECT_EQ(count_active_clusters(), 2);
+    EXPECT_EQ(count_closed_clusters(), 3);
     
-    // Проверяем активные
-    auto active = ClusterPool::instance().get_active_clusters();
-    ASSERT_EQ(active.size(), 1);
-    EXPECT_EQ(active[0], &c2);
-    EXPECT_FALSE(active[0]->is_closed());
+    auto closed_ids = pool.take_closed_clusters(0);
+    EXPECT_EQ(closed_ids.size(), 3);
     
-    // Проверяем закрытые
-    auto closed = ClusterPool::instance().get_closed_clusters();
-    ASSERT_EQ(closed.size(), 2);
-    EXPECT_TRUE(closed[0]->is_closed());
-    EXPECT_TRUE(closed[1]->is_closed());
+    EXPECT_EQ(count_closed_clusters(), 0);
+    EXPECT_EQ(count_active_clusters(), 2);
+    EXPECT_EQ(count_total_clusters(), 5);
 }
 
-// ============================================================
-// ТЕСТ 6: Очистка пула с кластерами
-// ============================================================
+TEST_F(IntegrationTest, CleanupAfterProcessing) {
+    auto& pool = ClusterPool::instance();
+    auto& buffer = PointBuffer::instance();
+    
+    std::vector<uint64_t> ids;
+    
+    for (int i = 0; i < 5; ++i) {
+        StoredPoint point;
+        point.azimuth = 10 + i * 20;
+        point.range = 50 + i * 5;
+        point.is_rbs = true;
+        point.amplitude = 100;
+        size_t idx = buffer.add_point(point);
+        
+        uint64_t id = pool.create_cluster();
+        ids.push_back(id);
+        
+        Cluster* cluster = pool.get_cluster(id);
+        cluster->add_point(idx);
+        pool.close_cluster(id, 0);
+    }
+    
+    EXPECT_EQ(count_total_clusters(), 5);
+    EXPECT_EQ(count_closed_clusters(), 5);
+    
+    auto closed_ids = pool.take_closed_clusters(0);
+    EXPECT_EQ(closed_ids.size(), 5);
+    
+    EXPECT_EQ(count_closed_clusters(), 0);
+    EXPECT_EQ(count_total_clusters(), 5);
+    
+    size_t cleaned = pool.cleanup_delayed_clusters(0, 0.0);
+    EXPECT_EQ(cleaned, 5);
+    EXPECT_EQ(count_total_clusters(), 0);
+}
 
-TEST_F(IntegrationTest, ClearPoolWithClusters) {
-    Cluster& c1 = ClusterPool::instance().create_cluster();
-    Cluster& c2 = ClusterPool::instance().create_cluster();
-    
-    size_t idx1 = add_point(100, 50);
-    size_t idx2 = add_point(200, 60);
-    
-    c1.add_point(idx1);
-    c2.add_point(idx2);
-    
-    EXPECT_EQ(ClusterPool::instance().size(), 2);
-    
-    ClusterPool::instance().clear();
-    
-    EXPECT_EQ(ClusterPool::instance().size(), 0);
-    EXPECT_TRUE(ClusterPool::instance().is_empty());
+int main(int argc, char** argv) {
+    ::testing::InitGoogleTest(&argc, argv);
+    return RUN_ALL_TESTS();
 }

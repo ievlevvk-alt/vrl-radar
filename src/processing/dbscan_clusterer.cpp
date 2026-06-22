@@ -22,10 +22,16 @@ DBSCANClusterer::DBSCANClusterer(const RadarConfig& config,
     , max_range_gap_(max_range_gap)
     , azimuth_gap_coefficient_(azimuth_gap_coefficient) {
     
-    // Рассчитываем max_azimuth_gap из ширины диаграммы направленности
     double beamwidth_bins = config_.beamwidth_deg * AZIMUTH_BINS / 360.0;
     max_azimuth_gap_ = static_cast<int>(beamwidth_bins * azimuth_gap_coefficient_);
     if (max_azimuth_gap_ < 1) max_azimuth_gap_ = 1;
+    
+    std::cout << "[DBSCANClusterer] Constructor:" << std::endl;
+    std::cout << "  beamwidth_deg = " << config_.beamwidth_deg << std::endl;
+    std::cout << "  beamwidth_bins = " << beamwidth_bins << std::endl;
+    std::cout << "  azimuth_gap_coefficient = " << azimuth_gap_coefficient_ << std::endl;
+    std::cout << "  max_azimuth_gap = " << max_azimuth_gap_ << std::endl;
+    std::cout << "  max_range_gap = " << max_range_gap_ << std::endl;
     
     VRL_LOG_INFO(modules::CLUSTER, "DBSCANClusterer initialized: "
                   "azimuth_gap=" + std::to_string(max_azimuth_gap_) + " MAI" +
@@ -37,28 +43,58 @@ DBSCANClusterer::DBSCANClusterer(const RadarConfig& config,
 // ========================================================================
 
 Cluster* DBSCANClusterer::find_cluster(uint16_t azimuth, uint16_t range, bool is_rbs) {
-    // Обновляем список активных кластеров
     refresh_active_clusters();
     
+    std::cout << "[find_cluster] Looking for cluster: az=" << azimuth 
+              << ", range=" << range << ", is_rbs=" << is_rbs << std::endl;
+    std::cout << "[find_cluster] active_clusters_.size()=" << active_clusters_.size() << std::endl;
+    
     for (Cluster* cluster : active_clusters_) {
-        // 1. Проверяем тип (RBS и UVD не смешиваем)
-        if (is_rbs && !cluster->has_rbs()) continue;
-        if (!is_rbs && !cluster->has_uvd()) continue;
-        if (cluster->is_closed()) continue;
+        std::cout << "[find_cluster] Checking cluster: last_az=" << cluster->get_last_azimuth()
+                  << ", min_range=" << cluster->get_min_range()
+                  << ", max_range=" << cluster->get_max_range()
+                  << ", has_rbs=" << cluster->has_rbs()
+                  << ", has_uvd=" << cluster->has_uvd()
+                  << ", is_closed=" << cluster->is_closed() << std::endl;
         
-        // 2. Проверяем азимут (правый край + разрыв)
+        if (is_rbs && !cluster->has_rbs()) {
+            std::cout << "[find_cluster]  SKIP: cluster has no RBS" << std::endl;
+            continue;
+        }
+        if (!is_rbs && !cluster->has_uvd()) {
+            std::cout << "[find_cluster]  SKIP: cluster has no UVD" << std::endl;
+            continue;
+        }
+        if (cluster->is_closed()) {
+            std::cout << "[find_cluster]  SKIP: cluster is closed" << std::endl;
+            continue;
+        }
+        
         int16_t az_gap = azimuth - cluster->get_last_azimuth();
         if (az_gap < 0) az_gap += AZIMUTH_BINS;
-        if (az_gap > max_azimuth_gap_) continue;
         
-        // 3. Проверяем дальность
-        if (range < cluster->get_min_range() - max_range_gap_) continue;
-        if (range > cluster->get_max_range() + max_range_gap_) continue;
+        std::cout << "[find_cluster]  az_gap = " << az_gap 
+                  << ", max_azimuth_gap = " << max_azimuth_gap_ << std::endl;
         
-        // Все проверки пройдены → подходит
+        if (az_gap > max_azimuth_gap_) {
+            std::cout << "[find_cluster]  SKIP: az_gap > max_azimuth_gap" << std::endl;
+            continue;
+        }
+        
+        if (range < cluster->get_min_range() - max_range_gap_) {
+            std::cout << "[find_cluster]  SKIP: range too low" << std::endl;
+            continue;
+        }
+        if (range > cluster->get_max_range() + max_range_gap_) {
+            std::cout << "[find_cluster]  SKIP: range too high" << std::endl;
+            continue;
+        }
+        
+        std::cout << "[find_cluster]  FOUND matching cluster!" << std::endl;
         return cluster;
     }
     
+    std::cout << "[find_cluster] No matching cluster found" << std::endl;
     return nullptr;
 }
 
@@ -68,18 +104,16 @@ Cluster* DBSCANClusterer::find_cluster(uint16_t azimuth, uint16_t range, bool is
 
 void DBSCANClusterer::create_cluster(uint16_t azimuth, uint16_t range, bool is_rbs,
                                      size_t buffer_index) {
-    (void)azimuth;
-    (void)range;
+    std::cout << "[create_cluster] Creating new cluster: az=" << azimuth 
+              << ", range=" << range << ", is_rbs=" << is_rbs << std::endl;
     
-    Cluster& cluster = ClusterPool::instance().create_cluster();
-    cluster.add_point(buffer_index);
+    uint64_t id = ClusterPool::instance().create_cluster();
+    Cluster* cluster = ClusterPool::instance().get_cluster(id);
+    cluster->add_point(buffer_index);
     total_clusters_formed_++;
     
-    if (debug_) {
-        std::cout << "Created new cluster: az=" << azimuth 
-                  << ", range=" << range 
-                  << ", type=" << (is_rbs ? "RBS" : "UVD") << std::endl;
-    }
+    std::cout << "[create_cluster] New cluster id=" << id
+              << ", total_clusters_formed=" << total_clusters_formed_ << std::endl;
 }
 
 // ========================================================================
@@ -88,26 +122,21 @@ void DBSCANClusterer::create_cluster(uint16_t azimuth, uint16_t range, bool is_r
 
 void DBSCANClusterer::process_point(uint16_t azimuth, uint16_t range, bool is_rbs,
                                     const StoredPoint& point, size_t buffer_index) {
-    (void)point;
+    std::cout << "[process_point] Processing: az=" << azimuth 
+              << ", range=" << range << ", is_rbs=" << is_rbs << std::endl;
     
-    // 1. Закрываем кластеры с большим разрывом
     close_expired_clusters(azimuth);
     
-    // 2. Ищем подходящий кластер
     Cluster* target = find_cluster(azimuth, range, is_rbs);
     
-    // 3. Добавляем точку или создаем новый кластер
     if (target) {
+        std::cout << "[process_point] Adding point to existing cluster" << std::endl;
         target->add_point(buffer_index);
-        if (debug_) {
-            std::cout << "Added point to cluster: az=" << azimuth 
-                      << ", range=" << range << std::endl;
-        }
     } else {
+        std::cout << "[process_point] Creating new cluster" << std::endl;
         create_cluster(azimuth, range, is_rbs, buffer_index);
     }
     
-    // 4. Объединяем перекрывающиеся кластеры
     merge_overlapping_clusters();
 }
 
@@ -118,31 +147,58 @@ void DBSCANClusterer::process_point(uint16_t azimuth, uint16_t range, bool is_rb
 void DBSCANClusterer::close_expired_clusters(uint16_t current_azimuth) {
     refresh_active_clusters();
     
+    std::cout << "[close_expired_clusters] current_azimuth=" << current_azimuth
+              << ", active_clusters_.size()=" << active_clusters_.size() << std::endl;
+    
     int closed_count = 0;
     
     for (Cluster* cluster : active_clusters_) {
-        if (cluster->is_closed()) continue;
-        if (cluster->is_empty()) continue;
+        if (cluster->is_closed()) {
+            std::cout << "[close_expired_clusters]  cluster already closed" << std::endl;
+            continue;
+        }
+        if (cluster->is_empty()) {
+            std::cout << "[close_expired_clusters]  cluster empty" << std::endl;
+            continue;
+        }
         
         int16_t az_gap = current_azimuth - cluster->get_last_azimuth();
         if (az_gap < 0) az_gap += AZIMUTH_BINS;
         
+        std::cout << "[close_expired_clusters]  cluster: last_az=" << cluster->get_last_azimuth()
+                  << ", az_gap=" << az_gap << ", max_azimuth_gap=" << max_azimuth_gap_ << std::endl;
+        
         if (az_gap > max_azimuth_gap_) {
             cluster->close();
+            
+            // Ищем ID кластера по указателю
+            uint64_t id = 0;
+            bool found = false;
+            auto ids = ClusterPool::instance().get_all_ids();
+            for (uint64_t cid : ids) {
+                if (ClusterPool::instance().get_cluster(cid) == cluster) {
+                    id = cid;
+                    found = true;
+                    break;
+                }
+            }
+            
+            if (found) {
+                int sector = cluster->get_last_azimuth() / ClusterPool::SECTOR_SIZE;
+                if (sector >= ClusterPool::NUM_SECTORS) sector = ClusterPool::NUM_SECTORS - 1;
+                
+                std::cout << "[close_expired_clusters]  CLOSING cluster id=" << id
+                          << ", sector=" << sector << std::endl;
+                
+                ClusterPool::instance().close_cluster(id, sector);
+            }
+            
             closed_count++;
             total_clusters_completed_++;
-            
-            if (debug_) {
-                std::cout << "Closed cluster: az_span=" 
-                          << cluster->get_azimuth_span() 
-                          << ", points=" << cluster->size() << std::endl;
-            }
         }
     }
     
-    if (closed_count > 0 && debug_) {
-        std::cout << "Closed " << closed_count << " clusters" << std::endl;
-    }
+    std::cout << "[close_expired_clusters] closed " << closed_count << " clusters" << std::endl;
 }
 
 // ========================================================================
@@ -151,71 +207,53 @@ void DBSCANClusterer::close_expired_clusters(uint16_t current_azimuth) {
 
 void DBSCANClusterer::refresh_active_clusters() const {
     active_clusters_.clear();
-    auto active = ClusterPool::instance().get_active_clusters();
-    for (Cluster* cluster : active) {
-        if (!cluster->is_closed()) {
+    
+    auto clusters = ClusterPool::instance().get_all_clusters();
+    
+    std::cout << "[refresh_active_clusters] total clusters=" << clusters.size() << std::endl;
+    
+    for (Cluster* cluster : clusters) {
+        if (cluster && !cluster->is_closed()) {
             active_clusters_.push_back(cluster);
+            std::cout << "[refresh_active_clusters]  added cluster: size=" 
+                      << cluster->size() << ", last_az=" 
+                      << cluster->get_last_azimuth() << std::endl;
+        } else if (cluster && cluster->is_closed()) {
+            std::cout << "[refresh_active_clusters]  skipping closed cluster" << std::endl;
         }
     }
+    
+    std::cout << "[refresh_active_clusters] active_clusters_.size()=" 
+              << active_clusters_.size() << std::endl;
 }
 
 // ========================================================================
-// СТАТИСТИКА (const)
+// СТАТИСТИКА
 // ========================================================================
 
 void DBSCANClusterer::get_stats(size_t& active, size_t& completed) const {
     refresh_active_clusters();
     active = active_clusters_.size();
-    completed = ClusterPool::instance().get_closed_clusters().size();
+    completed = ClusterPool::instance().count_closed_clusters();
 }
 
 // ========================================================================
-// ПРОВЕРКА ПЕРЕКРЫТИЯ КЛАСТЕРОВ
+// ОСТАЛЬНЫЕ МЕТОДЫ
 // ========================================================================
 
 bool DBSCANClusterer::clusters_overlap(const Cluster& a, const Cluster& b) const {
-    if (debug_) {
-        std::cout << "Checking overlap:" << std::endl;
-        std::cout << "  A: range=[" << a.get_min_range() << "," << a.get_max_range() 
-                  << "], last_az=" << a.get_last_azimuth() << std::endl;
-        std::cout << "  B: range=[" << b.get_min_range() << "," << b.get_max_range() 
-                  << "], last_az=" << b.get_last_azimuth() << std::endl;
-    }
-    
-    // Разные типы не пересекаются
     if (a.has_rbs() != b.has_rbs()) return false;
     if (a.is_empty() || b.is_empty()) return false;
     
-    // Проверка дальности
-    if (a.get_min_range() > b.get_max_range() + max_range_gap_) {
-        if (debug_) std::cout << "  FAIL: range gap (min > max+gap)" << std::endl;
-        return false;
-    }
-    if (b.get_min_range() > a.get_max_range() + max_range_gap_) {
-        if (debug_) std::cout << "  FAIL: range gap (b.min > a.max+gap)" << std::endl;
-        return false;
-    }
+    if (a.get_min_range() > b.get_max_range() + max_range_gap_) return false;
+    if (b.get_min_range() > a.get_max_range() + max_range_gap_) return false;
     
-    // Проверка азимута
     int16_t az_gap = std::abs(static_cast<int16_t>(a.get_last_azimuth() - 
                                                    b.get_last_azimuth()));
     if (az_gap > AZIMUTH_BINS / 2) az_gap = AZIMUTH_BINS - az_gap;
     
-    if (debug_) std::cout << "  az_gap=" << az_gap << ", max_az_gap=" << max_azimuth_gap_ << std::endl;
-    
-    if (az_gap > max_azimuth_gap_) {
-        if (debug_) std::cout << "  FAIL: azimuth gap" << std::endl;
-        return false;
-    }
-    
-    if (debug_) std::cout << "  OVERLAP: TRUE" << std::endl;
-    return true;
+    return az_gap <= max_azimuth_gap_;
 }
-
-
-// ========================================================================
-// ОБЪЕДИНЕНИЕ ПЕРЕКРЫВАЮЩИХСЯ КЛАСТЕРОВ
-// ========================================================================
 
 void DBSCANClusterer::merge_overlapping_clusters() {
     refresh_active_clusters();
@@ -235,22 +273,32 @@ void DBSCANClusterer::merge_overlapping_clusters() {
                 if (a->is_closed() || b->is_closed()) continue;
                 
                 if (clusters_overlap(*a, *b)) {
-                    // Объединяем b в a
+                    std::cout << "[merge_overlapping_clusters] Merging clusters " << i << " and " << j << std::endl;
+                    
                     for (size_t idx : b->get_indices()) {
                         a->add_point(idx);
                     }
                     
-                    // Удаляем b из пула (не просто закрываем!)
-                    ClusterPool::instance().remove_cluster(b);
-                    total_clusters_completed_++;
+                    // Находим ID b
+                    uint64_t b_id = 0;
+                    bool found = false;
+                    auto ids = ClusterPool::instance().get_all_ids();
+                    for (uint64_t cid : ids) {
+                        if (ClusterPool::instance().get_cluster(cid) == b) {
+                            b_id = cid;
+                            found = true;
+                            break;
+                        }
+                    }
+                    
+                    if (found) {
+                        ClusterPool::instance().remove_cluster(b_id);
+                        total_clusters_completed_++;
+                    }
                     
                     refresh_active_clusters();
                     merged = true;
                     merge_count++;
-                    
-                    if (debug_) {
-                        std::cout << "Merged clusters: " << merge_count << std::endl;
-                    }
                     break;
                 }
             }
@@ -258,57 +306,20 @@ void DBSCANClusterer::merge_overlapping_clusters() {
         }
     }
     
-    if (merge_count > 0 && debug_) {
-        std::cout << "Merged " << merge_count << " cluster pairs" << std::endl;
+    if (merge_count > 0) {
+        std::cout << "[merge_overlapping_clusters] Merged " << merge_count << " pairs" << std::endl;
     }
 }
-
-
-// ========================================================================
-// ОТЛАДОЧНЫЙ ВЫВОД
-// ========================================================================
-
-void DBSCANClusterer::debug_print(const std::string& msg) {
-    if (!debug_) return;
-    
-    refresh_active_clusters();
-    
-    std::cout << msg << std::endl;
-    std::cout << "Active clusters: " << active_clusters_.size() << std::endl;
-    
-    for (size_t i = 0; i < active_clusters_.size(); ++i) {
-        const Cluster* c = active_clusters_[i];
-        if (!c) continue;
-        std::cout << "  Cluster " << i << ": ";
-        std::cout << "points=" << c->size();
-        std::cout << ", range=[" << c->get_min_range() << "-" << c->get_max_range() << "]";
-        std::cout << ", span=" << c->get_azimuth_span();
-        std::cout << ", type=" << (c->has_rbs() ? "RBS" : "UVD");
-        std::cout << ", closed=" << (c->is_closed() ? "yes" : "no");
-        std::cout << std::endl;
-    }
-}
-
-// ========================================================================
-// IClusterer РЕАЛИЗАЦИЯ
-// ========================================================================
 
 void DBSCANClusterer::process_scan(const ScanReplies& scan) {
     total_scans_processed_++;
     current_revolution_++;
     current_azimuth_ = scan.azimuth;
     
-    VRL_LOG_TRACE(modules::CLUSTER, "Processing scan: azimuth=" + 
-                  std::to_string(scan.azimuth) + 
-                  ", rbs=" + std::to_string(scan.rbs_replies.size()) +
-                  ", uvd=" + std::to_string(scan.uvd_replies.size()));
+    std::cout << "\n[process_scan] Processing scan: az=" << scan.azimuth 
+              << ", rbs=" << scan.rbs_replies.size()
+              << ", uvd=" << scan.uvd_replies.size() << std::endl;
     
-    if (debug_) {
-        std::cout << "\n=== Processing scan " << total_scans_processed_ 
-                  << " azimuth=" << scan.azimuth << " ===" << std::endl;
-    }
-    
-    // Обрабатываем RBS
     for (const auto& reply : scan.rbs_replies) {
         StoredPoint point;
         point.azimuth = reply.azimuth;
@@ -323,7 +334,6 @@ void DBSCANClusterer::process_scan(const ScanReplies& scan) {
         process_point(reply.azimuth, reply.range, true, point, buffer_idx);
     }
     
-    // Обрабатываем UVD
     for (const auto& reply : scan.uvd_replies) {
         StoredPoint point;
         point.azimuth = reply.azimuth;
@@ -341,27 +351,11 @@ void DBSCANClusterer::process_scan(const ScanReplies& scan) {
         process_point(reply.azimuth, reply.range, false, point, buffer_idx);
     }
     
-    if (debug_) {
-        debug_print("After processing:");
-    }
+    std::cout << "[process_scan] Done. active_clusters=" << count_active_clusters() << std::endl;
 }
 
-// ========================================================================
-// ВОЗВРАТ ЗАВЕРШЕННЫХ КЛАСТЕРОВ
-// ========================================================================
-
 std::vector<TargetCluster> DBSCANClusterer::get_completed_clusters() {
-    std::vector<TargetCluster> result;
-    
-    auto closed = ClusterPool::instance().get_closed_clusters();
-    for (Cluster* cluster : closed) {
-        // TODO: Преобразовать Cluster в TargetCluster
-        TargetCluster tc;
-        // Временно пустой
-        result.push_back(tc);
-    }
-    
-    return result;
+    return {};
 }
 
 const std::vector<TargetCluster>& DBSCANClusterer::get_active_clusters() const {
@@ -370,6 +364,7 @@ const std::vector<TargetCluster>& DBSCANClusterer::get_active_clusters() const {
 }
 
 void DBSCANClusterer::reset() {
+    std::cout << "[reset] Resetting DBSCANClusterer" << std::endl;
     ClusterPool::instance().clear();
     active_clusters_.clear();
     total_scans_processed_ = 0;
@@ -378,27 +373,39 @@ void DBSCANClusterer::reset() {
     total_clusters_completed_ = 0;
     current_revolution_ = 0;
     current_azimuth_ = 0;
-    
-    VRL_LOG_INFO(modules::CLUSTER, "DBSCANClusterer reset");
 }
 
 std::vector<TargetCluster> DBSCANClusterer::finish_all() {
-    // Закрываем все активные кластеры
     refresh_active_clusters();
+    
     for (Cluster* cluster : active_clusters_) {
         if (!cluster->is_closed()) {
             cluster->close();
+            
+            // Ищем ID кластера
+            uint64_t id = 0;
+            bool found = false;
+            auto ids = ClusterPool::instance().get_all_ids();
+            for (uint64_t cid : ids) {
+                if (ClusterPool::instance().get_cluster(cid) == cluster) {
+                    id = cid;
+                    found = true;
+                    break;
+                }
+            }
+            
+            if (found) {
+                int sector = cluster->get_last_azimuth() / ClusterPool::SECTOR_SIZE;
+                if (sector >= ClusterPool::NUM_SECTORS) sector = ClusterPool::NUM_SECTORS - 1;
+                ClusterPool::instance().close_cluster(id, sector);
+            }
+            
             total_clusters_completed_++;
         }
     }
     
     return get_completed_clusters();
 }
-
-
-// ========================================================================
-// КЛОНИРОВАНИЕ (исправлено)
-// ========================================================================
 
 std::unique_ptr<IClusterer> DBSCANClusterer::clone() const {
     auto clone = std::make_unique<DBSCANClusterer>(
@@ -414,13 +421,11 @@ void DBSCANClusterer::set_param(const std::string& key, double value) {
         double beamwidth_bins = config_.beamwidth_deg * AZIMUTH_BINS / 360.0;
         max_azimuth_gap_ = static_cast<int>(beamwidth_bins * value);
         if (max_azimuth_gap_ < 1) max_azimuth_gap_ = 1;
-        VRL_LOG_DEBUG(modules::CLUSTER, "set_param: azimuth_gap_coefficient=" +
-                      std::to_string(value) + " -> gap=" + 
-                      std::to_string(max_azimuth_gap_));
+        std::cout << "[set_param] azimuth_gap_coefficient=" << value 
+                  << " -> max_azimuth_gap=" << max_azimuth_gap_ << std::endl;
     } else if (key == "max_range_gap") {
         max_range_gap_ = static_cast<int>(value);
-    } else {
-        VRL_LOG_WARN(modules::CLUSTER, "Unknown double parameter: " + key);
+        std::cout << "[set_param] max_range_gap=" << max_range_gap_ << std::endl;
     }
 }
 
@@ -428,13 +433,16 @@ void DBSCANClusterer::set_param(const std::string& key, int value) {
     if (key == "max_azimuth_gap") {
         max_azimuth_gap_ = value;
         if (max_azimuth_gap_ < 1) max_azimuth_gap_ = 1;
-        VRL_LOG_DEBUG(modules::CLUSTER, "set_param: max_azimuth_gap=" + 
-                      std::to_string(value));
+        std::cout << "[set_param] max_azimuth_gap=" << value << std::endl;
     } else if (key == "max_range_gap") {
         max_range_gap_ = value;
-    } else {
-        VRL_LOG_WARN(modules::CLUSTER, "Unknown int parameter: " + key);
+        std::cout << "[set_param] max_range_gap=" << value << std::endl;
     }
+}
+
+size_t DBSCANClusterer::count_active_clusters() const {
+    refresh_active_clusters();
+    return active_clusters_.size();
 }
 
 } // namespace radar

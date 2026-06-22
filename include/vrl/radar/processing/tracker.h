@@ -4,6 +4,9 @@
 #include "../core/types.h"
 #include "../core/replies.h"
 #include "../core/config.h"
+#include "../core/track.hpp"        // <-- Добавляем
+#include "../core/track_pool.hpp"   // <-- Добавляем
+#include "../core/filter_types.hpp"
 #include "i_tracker_filter.h"
 #include "kalman_filter.h"
 #include "extended_kalman_filter.h"
@@ -19,21 +22,14 @@
 namespace vrl {
 namespace radar {
 
-// ============================================================================
-// ТИПЫ ФИЛЬТРОВ
-// ============================================================================
-
-enum class FilterType {
-    KALMAN,              // Стандартный фильтр Калмана
-    EXTENDED_KALMAN,     // Расширенный фильтр Калмана (EKF)
-    UNSCENTED_KALMAN     // Сигма-точечный фильтр Калмана (UKF)
-};
+// Forward declaration
+class Cluster;
 
 // ============================================================================
-// КОЛЬЦЕВОЙ БУФЕР ДЛЯ ИСТОРИИ ТРЕКОВ
+// КЛАСС ДЛЯ ИСТОРИИ
 // ============================================================================
 
-template<typename T, size_t MaxSize = 10>
+template<typename T, size_t MaxSize>
 class CircularHistory {
 public:
     static constexpr size_t MAX_SIZE = MaxSize;
@@ -96,6 +92,7 @@ public:
     void clear() { size_ = 0; head_ = 0; }
     bool is_full() const { return size_ == MAX_SIZE; }
     
+    // Итераторы
     class Iterator {
     public:
         Iterator(const CircularHistory* history, size_t pos)
@@ -126,69 +123,6 @@ private:
 };
 
 // ============================================================================
-// TRACK
-// ============================================================================
-
-struct Track {
-    static constexpr size_t DEFAULT_MAX_HISTORY = 20;
-    
-    uint64_t id{0};
-    TrackState state{TrackState::NEW};
-    
-    double x{0.0}, y{0.0};
-    double azimuth_deg{0.0};
-    double range_m{0.0};
-    
-    double vx{0.0}, vy{0.0};
-    double ground_speed{0.0};
-    double course_deg{0.0};
-    
-    uint16_t mode3a_code{0};
-    uint32_t uvd_data20{0};
-    uint16_t altitude{0};
-    bool spi{false};
-    
-    uint32_t first_revolution{0};
-    uint32_t last_revolution{0};
-    uint32_t last_update_revolution{0};
-    uint32_t coast_count{0};
-    uint32_t hit_count{0};
-    
-    double confidence{0.0};
-    double position_error{0.0};
-    bool code_reliable{true};
-    bool altitude_reliable{true};
-    
-    FilterType filter_type{FilterType::KALMAN};
-    
-    CircularHistory<TargetReport, DEFAULT_MAX_HISTORY> history;
-    
-    void add_history(const TargetReport& report) {
-        history.push(report);
-    }
-    
-    std::vector<TargetReport> get_history() const {
-        return history.get_all();
-    }
-    
-    const TargetReport* get_last_report() const {
-        return history.back();
-    }
-    
-    bool is_confirmed() const {
-        return hit_count >= 3 && state == TrackState::ACTIVE;
-    }
-    
-    size_t history_size() const {
-        return history.size();
-    }
-    
-    void clear_history() {
-        history.clear();
-    }
-};
-
-// ============================================================================
 // TRACK MANAGER
 // ============================================================================
 
@@ -199,6 +133,26 @@ public:
                           std::unique_ptr<ITrackerFilter> filter);
     ~TrackManager() = default;
     
+    // --- НОВЫЕ МЕТОДЫ ДЛЯ РАБОТЫ С КЛАСТЕРАМИ ---
+    
+    /**
+     * @brief Обработать закрытые кластеры из сектора
+     * @param sector_index индекс сектора
+     * @param cluster_ids ID кластеров для обработки
+     */
+    void process_clusters_in_sector(int sector_index, 
+                                    const std::vector<uint64_t>& cluster_ids);
+    
+    /**
+     * @brief Обработать широкие кластеры
+     * @param cluster_ids ID широких кластеров
+     */
+    void process_wide_clusters(const std::vector<uint64_t>& cluster_ids);
+    
+    std::vector<Track*> get_tracks_in_sector(int sector_index);
+    
+    // --- СУЩЕСТВУЮЩИЕ МЕТОДЫ ---
+    
     void process_targets(const std::vector<TargetReport>& targets, uint32_t revolution);
     std::vector<Track> get_active_tracks() const;
     std::vector<Track> get_confirmed_tracks() const;
@@ -208,15 +162,13 @@ public:
     void set_filter(std::unique_ptr<ITrackerFilter> filter);
     ITrackerFilter* get_filter() const { return default_filter_.get(); }
     
-    // НОВЫЕ МЕТОДЫ ДЛЯ ВЫБОРА ФИЛЬТРА
     void set_filter_type(FilterType type);
     FilterType get_filter_type() const { return filter_type_; }
     void set_max_history_size(size_t max_size) { max_history_size_ = max_size; }
     size_t get_max_history_size() const { return max_history_size_; }
     
-    // Получить информацию о фильтре
     std::string get_filter_name() const;
-    
+
 private:
     struct TrackWithFilter {
         Track track;
@@ -227,11 +179,21 @@ private:
             : track(t), filter(std::move(f)) {}
     };
     
-    void update_tracks(const std::vector<TargetReport>& targets, uint32_t revolution);
-    void create_new_tracks(const std::vector<TargetReport>& targets, uint32_t revolution);
-    void manage_track_states(uint32_t revolution);
+    // --- Вспомогательные методы ---
+    Track* find_best_track(const Cluster& cluster, 
+                           const std::vector<Track*>& tracks);
+    
+    void update_track_with_cluster(Track& track, const Cluster& cluster);
+    void create_track_from_cluster(const Cluster& cluster, int sector);
+    std::vector<TargetReport> split_wide_cluster(const Cluster& cluster);
+    bool is_valid_cluster(const Cluster& cluster) const;
+    bool is_valid_report(const TargetReport& report) const;
+    
+    TargetReport build_report_from_cluster(const Cluster& cluster);
     double calculate_distance(const TargetReport& target, const Track& track) const;
+    double calculate_distance(const Cluster& cluster, const Track& track) const;
     bool is_code_match(const TargetReport& target, const Track& track) const;
+    bool is_code_match(const Cluster& cluster, const Track& track) const;
     double calculate_azimuth_diff(double az1, double az2) const;
     
     std::unique_ptr<ITrackerFilter> create_filter(FilterType type) const;
@@ -244,6 +206,8 @@ private:
     std::unique_ptr<ITrackerFilter> default_filter_;
     FilterType filter_type_{FilterType::KALMAN};
     size_t max_history_size_{Track::DEFAULT_MAX_HISTORY};
+    
+    TrackPool& track_pool_;
 };
 
 } // namespace radar

@@ -7,6 +7,8 @@
 ./tools/2_3_combined
 ./tools/4_radar_player
 
+ctest --output-on-failure
+
 
 # uvd-radar
 
