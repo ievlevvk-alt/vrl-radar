@@ -4,12 +4,33 @@
 #include "grid_config.hpp"
 #include <vector>
 #include <cstdint>
-#include <cstddef>          // <-- ДОБАВЛЕНО для size_t
+#include <cstddef>
 #include <unordered_map>
 
 namespace vrl {
 namespace radar {
 namespace v2 {
+
+/**
+ * @brief Ключ ячейки сетки
+ */
+struct GridCellKey {
+    int x;
+    int y;
+    
+    bool operator==(const GridCellKey& other) const {
+        return x == other.x && y == other.y;
+    }
+};
+
+/**
+ * @brief Хеш для ключа ячейки
+ */
+struct GridCellKeyHash {
+    size_t operator()(const GridCellKey& key) const {
+        return std::hash<int>()(key.x) ^ (std::hash<int>()(key.y) << 1);
+    }
+};
 
 /**
  * @brief Пространственный индекс на основе квадратной сетки
@@ -63,6 +84,28 @@ public:
      */
     std::vector<uint64_t> get_all_tracks() const;
     
+    // === Внутренние методы (публичные для тестирования) ===
+    
+    /**
+     * @brief Получить ключ ячейки для координат
+     */
+    GridCellKey get_cell_key(double x, double y) const;
+    
+    /**
+     * @brief Проверить, находится ли ячейка в пределах дальности
+     */
+    bool is_in_range(const GridCellKey& key) const;
+    
+    /**
+     * @brief Получить количество колец для заданной дальности
+     */
+    int get_rings_for_range(double range_m) const;
+    
+    /**
+     * @brief Получить соседние ячейки
+     */
+    std::vector<GridCellKey> get_neighbor_cells(const GridCellKey& center, int rings) const;
+    
     // === Очистка ===
     void clear();
     
@@ -74,33 +117,15 @@ public:
     Stats get_stats() const;
 
 private:
-    struct CellKey {
-        int x;
-        int y;
-        
-        bool operator==(const CellKey& other) const {
-            return x == other.x && y == other.y;
-        }
-    };
-    
-    struct CellKeyHash {
-        // ИСПРАВЛЕНО: operator() должен быть public (по умолчанию public в struct)
-        size_t operator()(const CellKey& key) const {
-            return std::hash<int>()(key.x) ^ (std::hash<int>()(key.y) << 1);
-        }
-    };
-    
-    CellKey get_cell_key(double x, double y) const;
-    bool is_in_range(const CellKey& key) const;
-    int get_rings_for_range(double range_m) const;
-    std::vector<CellKey> get_neighbor_cells(const CellKey& center, int rings) const;
+    using CellMap = std::unordered_map<GridCellKey, std::vector<uint64_t>, GridCellKeyHash>;
+    using TrackMap = std::unordered_map<uint64_t, GridCellKey>;
     
     GridConfig config_;
     double cell_size_m_;
     double max_range_m_;
     
-    std::unordered_map<CellKey, std::vector<uint64_t>, CellKeyHash> grid_;
-    std::unordered_map<uint64_t, CellKey> track_to_cell_;
+    CellMap grid_;
+    TrackMap track_to_cell_;
 };
 
 } // namespace v2

@@ -16,13 +16,13 @@ GridIndex::GridIndex(const GridConfig& config)
 // ВНУТРЕННИЕ МЕТОДЫ
 // ============================================================================
 
-GridIndex::CellKey GridIndex::get_cell_key(double x, double y) const {
+GridCellKey GridIndex::get_cell_key(double x, double y) const {
     int gx = static_cast<int>(std::floor(x / cell_size_m_));
     int gy = static_cast<int>(std::floor(y / cell_size_m_));
     return {gx, gy};
 }
 
-bool GridIndex::is_in_range(const CellKey& key) const {
+bool GridIndex::is_in_range(const GridCellKey& key) const {
     // Центр ячейки
     double cx = (static_cast<double>(key.x) + 0.5) * cell_size_m_;
     double cy = (static_cast<double>(key.y) + 0.5) * cell_size_m_;
@@ -38,15 +38,15 @@ int GridIndex::get_rings_for_range(double range_m) const {
     return config_.rings_far;
 }
 
-std::vector<GridIndex::CellKey> GridIndex::get_neighbor_cells(
-    const CellKey& center, int rings) const {
+std::vector<GridCellKey> GridIndex::get_neighbor_cells(
+    const GridCellKey& center, int rings) const {
     
-    std::vector<CellKey> result;
+    std::vector<GridCellKey> result;
     result.reserve((2 * rings + 1) * (2 * rings + 1));
     
     for (int dx = -rings; dx <= rings; ++dx) {
         for (int dy = -rings; dy <= rings; ++dy) {
-            CellKey key{center.x + dx, center.y + dy};
+            GridCellKey key{center.x + dx, center.y + dy};
             if (is_in_range(key)) {
                 result.push_back(key);
             }
@@ -61,7 +61,7 @@ std::vector<GridIndex::CellKey> GridIndex::get_neighbor_cells(
 // ============================================================================
 
 void GridIndex::add_track(uint64_t track_id, double x, double y) {
-    CellKey key = get_cell_key(x, y);
+    GridCellKey key = get_cell_key(x, y);
     
     if (!is_in_range(key)) {
         return;  // за пределами дальности
@@ -78,8 +78,8 @@ void GridIndex::update_track(uint64_t track_id, double x, double y) {
         return;
     }
     
-    CellKey old_key = it->second;
-    CellKey new_key = get_cell_key(x, y);
+    GridCellKey old_key = it->second;
+    GridCellKey new_key = get_cell_key(x, y);
     
     if (old_key == new_key) {
         return;  // не изменилась
@@ -106,7 +106,7 @@ void GridIndex::remove_track(uint64_t track_id) {
         return;
     }
     
-    CellKey key = it->second;
+    GridCellKey key = it->second;
     auto& vec = grid_[key];
     auto vec_it = std::find(vec.begin(), vec.end(), track_id);
     if (vec_it != vec.end()) {
@@ -128,14 +128,14 @@ bool GridIndex::has_track(uint64_t track_id) const {
 // ============================================================================
 
 std::vector<uint64_t> GridIndex::get_nearby_tracks(double x, double y) const {
-    CellKey center = get_cell_key(x, y);
+    GridCellKey center = get_cell_key(x, y);
     double range_m = std::sqrt(x * x + y * y);
     int rings = get_rings_for_range(range_m);
     return get_nearby_tracks(x, y, rings);
 }
 
 std::vector<uint64_t> GridIndex::get_nearby_tracks(double x, double y, int rings) const {
-    CellKey center = get_cell_key(x, y);
+    GridCellKey center = get_cell_key(x, y);
     auto cells = get_neighbor_cells(center, rings);
     
     std::vector<uint64_t> result;

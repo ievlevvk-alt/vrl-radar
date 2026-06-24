@@ -15,6 +15,35 @@ cd /home/bill/Documents/github/vrl-radar
 tar -czf vrl-radar-src.tar.gz --exclude=build --exclude=.* include/ src/ tests/ tools/ CMakeLists.txt
 
 
+
+=========
+
+Использование через GDB:
+gdb
+
+# Добавить одну RBS точку
+(gdb) call processor.add_rbs_point(512, 100, 01234, false)
+
+# Добавить серию RBS точек (создание кластера)
+(gdb) call processor.add_rbs_point(512, 100, 01234, false)
+(gdb) call processor.add_rbs_point(513, 101, 01234, false)
+(gdb) call processor.add_rbs_point(514, 102, 01234, false)
+(gdb) call processor.add_rbs_point(515, 103, 01234, false)
+
+# Добавить UVD точку
+(gdb) call processor.add_uvd_point(512, 100, 12345)
+
+# Получить статистику
+(gdb) call processor.print_stats()
+
+# Получить треки
+(gdb) call processor.get_tracks()
+
+# Сбросить все
+
+=================
+
+
 # uvd-radar
 
 # 1. Генерация ответов (5 минут симуляции)

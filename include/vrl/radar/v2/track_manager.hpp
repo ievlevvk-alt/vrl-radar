@@ -57,6 +57,35 @@ public:
     };
     Stats get_stats() const;
 
+    // ========================================================================
+    // === ПУБЛИЧНЫЕ МЕТОДЫ ДЛЯ ТЕСТИРОВАНИЯ ===
+    // ========================================================================
+    
+    // Управление секторами
+    void add_track_to_sector(uint64_t track_id, int sector);
+    void remove_track_from_sector(uint64_t track_id, int sector);
+    void update_track_sector(uint64_t track_id, int new_sector);
+    bool is_track_in_sector(uint64_t track_id, int sector) const;
+    int get_sector_from_azimuth(uint16_t azimuth_maia) const;
+    int get_delayed_sector(int current_sector) const;
+    
+    // Прогноз позиции
+    std::pair<double, double> predict_position(const Track& track, int64_t delta_maia) const;
+    
+    // Эллиптический строб
+    bool is_in_elliptical_gate(const Track& track, const Cluster& cluster) const;
+    
+    // Обработка COASTED треков
+    void process_coasted_tracks(int sector_index);
+    
+    // Очистка флагов
+    void clear_updated_flags_for_sector(int sector);
+    
+    // Для доступа к внутреннему состоянию в тестах
+    std::vector<std::pair<uint64_t, int>>& get_tracks_to_clear_flag() {
+        return tracks_to_clear_flag_;
+    }
+
 private:
     // === Основные методы обработки ===
     void process_closed_clusters();
@@ -69,39 +98,19 @@ private:
     void update_track_with_plot(uint64_t track_id, const Plot& plot);
     void remove_track(uint64_t track_id);
     
-    // === Сектора ===
-    void add_track_to_sector(uint64_t track_id, int sector);
-    void remove_track_from_sector(uint64_t track_id, int sector);
-    void update_track_sector(uint64_t track_id, int new_sector);
-    bool is_track_in_sector(uint64_t track_id, int sector) const;
-    
-    int get_sector_from_azimuth(uint16_t azimuth_maia) const;
-    int get_delayed_sector(int current_sector) const;
-       
-    // Прогноз с явным указанием дельты в МАИ
-    std::pair<double, double> predict_position(const Track& track, int64_t delta_maia) const;
-    
-    // Обработка COASTED треков в секторе
-    void process_coasted_tracks(int sector_index);
-    
-    // Получить азимут в МАИ из координат
-    int get_azimuth_from_xy(double x, double y) const;
-
-
-    // === Строб ===
-    bool is_in_elliptical_gate(const Track& track, const Cluster& cluster) const;
-    
-    // === Работа с кластерами ===
+    // Работа с кластерами
     std::pair<double, double> get_cluster_center(const Cluster& cluster) const;
     Plot::SourceType get_cluster_source_type(const Cluster& cluster) const;
     Plot create_plot_from_cluster(const Cluster& cluster) const;
     bool is_candidate(const Track& track, const Cluster& cluster) const;
     double calculate_distance(const Track& track, const Cluster& cluster) const;
-    int analyze_cluster_for_targets(const Cluster& cluster) const;  // заглушка
+    int analyze_cluster_for_targets(const Cluster& cluster) const;
     
-    // === Очистка флагов ===
-    void clear_updated_flags_for_sector(int sector);
+    // Очистка связей
     void remove_cluster_from_track_candidates(uint64_t track_id, uint64_t cluster_id);
+    
+    // Вспомогательные методы
+    int get_azimuth_from_xy(double x, double y) const;
     
     // === Компоненты ===
     TrackPool& track_pool_;
@@ -127,6 +136,9 @@ private:
     // Конфигурация
     GridConfig config_;
     bool initialized_{false};
+    
+    // Дружественный класс для тестов
+    friend class TrackManagerTest;
 };
 
 } // namespace v2

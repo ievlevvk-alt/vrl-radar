@@ -482,3 +482,156 @@ add_test(NAME test_cluster_pool_full
     COMMAND test_cluster_pool_full
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/tests
 )
+
+# tests/CMakeLists.txt - добавляем новые тесты
+
+include(GoogleTest)
+
+# ... существующие тесты ...
+
+# ===== НОВЫЕ ТЕСТЫ V2 =====
+
+# Тест GridIndex
+add_executable(test_grid_index
+    test_grid_index.cpp
+)
+
+target_link_libraries(test_grid_index
+    vrl_radar
+    GTest::gtest_main
+)
+
+target_compile_definitions(test_grid_index
+    PRIVATE
+        $<$<BOOL:${ENABLE_VERBOSE_LOGGING}>:ENABLE_VERBOSE_LOGGING>
+)
+
+set_target_properties(test_grid_index PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests"
+)
+
+add_test(NAME test_grid_index 
+    COMMAND test_grid_index
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/tests
+)
+
+# Тест TrackPool
+add_executable(test_track_pool
+    test_track_pool.cpp
+)
+
+target_link_libraries(test_track_pool
+    vrl_radar
+    GTest::gtest_main
+)
+
+target_compile_definitions(test_track_pool
+    PRIVATE
+        $<$<BOOL:${ENABLE_VERBOSE_LOGGING}>:ENABLE_VERBOSE_LOGGING>
+)
+
+set_target_properties(test_track_pool PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests"
+)
+
+add_test(NAME test_track_pool 
+    COMMAND test_track_pool
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/tests
+)
+
+# Тест PlotPool
+add_executable(test_plot_pool
+    test_plot_pool.cpp
+)
+
+target_link_libraries(test_plot_pool
+    vrl_radar
+    GTest::gtest_main
+)
+
+target_compile_definitions(test_plot_pool
+    PRIVATE
+        $<$<BOOL:${ENABLE_VERBOSE_LOGGING}>:ENABLE_VERBOSE_LOGGING>
+)
+
+set_target_properties(test_plot_pool PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests"
+)
+
+add_test(NAME test_plot_pool 
+    COMMAND test_plot_pool
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/tests
+)
+
+# Тест TrackManager
+add_executable(test_track_manager
+    test_track_manager.cpp
+)
+
+target_link_libraries(test_track_manager
+    vrl_radar
+    GTest::gtest_main
+)
+
+target_compile_definitions(test_track_manager
+    PRIVATE
+        $<$<BOOL:${ENABLE_VERBOSE_LOGGING}>:ENABLE_VERBOSE_LOGGING>
+)
+
+set_target_properties(test_track_manager PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests"
+)
+
+add_test(NAME test_track_manager 
+    COMMAND test_track_manager
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/tests
+)
+
+# Тест DBSCANClusterer (расширенный)
+add_executable(test_dbscan_clusterer_full
+    test_dbscan_clusterer_full.cpp
+)
+
+target_link_libraries(test_dbscan_clusterer_full
+    vrl_radar
+    GTest::gtest_main
+)
+
+target_compile_definitions(test_dbscan_clusterer_full
+    PRIVATE
+        $<$<BOOL:${ENABLE_VERBOSE_LOGGING}>:ENABLE_VERBOSE_LOGGING>
+)
+
+set_target_properties(test_dbscan_clusterer_full PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests"
+)
+
+add_test(NAME test_dbscan_clusterer_full 
+    COMMAND test_dbscan_clusterer_full
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/tests
+)
+
+# Интеграционный тест
+add_executable(test_integration_full
+    test_integration_full.cpp
+)
+
+target_link_libraries(test_integration_full
+    vrl_radar
+    GTest::gtest_main
+)
+
+target_compile_definitions(test_integration_full
+    PRIVATE
+        $<$<BOOL:${ENABLE_VERBOSE_LOGGING}>:ENABLE_VERBOSE_LOGGING>
+)
+
+set_target_properties(test_integration_full PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests"
+)
+
+add_test(NAME test_integration_full 
+    COMMAND test_integration_full
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/tests
+)
+

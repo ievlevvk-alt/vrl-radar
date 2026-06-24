@@ -103,72 +103,8 @@ void TrackManager::process_azimuth(uint16_t azimuth_maia) {
     process_wide_clusters();
 }
 
-int TrackManager::get_azimuth_from_xy(double x, double y) const {
-    double az_rad = std::atan2(x, y);
-    if (az_rad < 0) az_rad += 2.0 * M_PI;
-    return static_cast<int>(az_rad * 4096.0 / (2.0 * M_PI));
-}
-
-void TrackManager::process_coasted_tracks(int sector_index) {
-    if (sector_index < 0 || sector_index >= NUM_SECTORS) {
-        VRL_LOG_WARN(modules::TRACKER, "Invalid sector index: " + std::to_string(sector_index));
-        return;
-    }
-    
-    const auto& track_ids = tracks_by_sector_[sector_index];
-    if (track_ids.empty()) return;
-    
-    VRL_LOG_DEBUG(modules::TRACKER, "Processing coasted tracks in sector " +
-                  std::to_string(sector_index) + ", count=" + std::to_string(track_ids.size()));
-    
-    std::vector<uint64_t> to_remove;
-    
-    for (uint64_t track_id : track_ids) {
-        Track* track = track_pool_.get_track(track_id);
-        if (!track || track->state == 3) continue;
-        
-        // Если трек уже обновлён в этом обороте — пропускаем
-        if (track->updated_in_current_sector) continue;
-        
-        // Увеличиваем счётчик пропусков
-        track->coast_count++;
-        
-        // Проверяем, не превышен ли лимит
-        if (track->coast_count >= static_cast<uint32_t>(config_.max_coast_revolutions)) {
-            VRL_LOG_DEBUG(modules::TRACKER, "Track " + std::to_string(track_id) +
-                          " dropped (coast_count=" + std::to_string(track->coast_count) +
-                          ", max=" + std::to_string(config_.max_coast_revolutions) + ")");
-            to_remove.push_back(track_id);
-            continue;
-        }
-        
-        // Прогнозируем позицию на один оборот вперёд
-        auto [pred_x, pred_y] = predict_position(*track, 4096);
-        
-        // Обновляем GridIndex с прогнозируемой позицией
-        grid_index_.update_track(track->id, pred_x, pred_y);
-        
-        // Вычисляем прогнозируемый азимут и обновляем сектор
-        int pred_az_maia = get_azimuth_from_xy(pred_x, pred_y);
-        int new_sector = get_sector_from_azimuth(static_cast<uint16_t>(pred_az_maia));
-        update_track_sector(track->id, new_sector);
-        
-        // Если трек был ACTIVE, переводим в COASTING
-        if (track->state == 1) {
-            track->state = 2;  // COASTING
-            VRL_LOG_TRACE(modules::TRACKER, "Track " + std::to_string(track_id) +
-                          " coasting, count=" + std::to_string(track->coast_count));
-        }
-    }
-    
-    // Удаляем устаревшие треки
-    for (uint64_t track_id : to_remove) {
-        remove_track(track_id);
-    }
-}
-
 // ============================================================================
-// СЕКТОРА
+// СЕКТОРА (ПУБЛИЧНЫЕ МЕТОДЫ)
 // ============================================================================
 
 int TrackManager::get_sector_from_azimuth(uint16_t azimuth_maia) const {
@@ -219,7 +155,7 @@ bool TrackManager::is_track_in_sector(uint64_t track_id, int sector) const {
 }
 
 // ============================================================================
-// ПРОГНОЗ
+// ПРОГНОЗ (ПУБЛИЧНЫЙ)
 // ============================================================================
 
 std::pair<double, double> TrackManager::predict_position(
@@ -235,7 +171,7 @@ std::pair<double, double> TrackManager::predict_position(
 }
 
 // ============================================================================
-// СТРОБ (ЭЛЛИПТИЧЕСКИЙ GATE)
+// СТРОБ (ПУБЛИЧНЫЙ)
 // ============================================================================
 
 bool TrackManager::is_in_elliptical_gate(const Track& track, const Cluster& cluster) const {
@@ -287,8 +223,86 @@ bool TrackManager::is_in_elliptical_gate(const Track& track, const Cluster& clus
 }
 
 // ============================================================================
-// РАБОТА С КЛАСТЕРАМИ
+// ОБРАБОТКА COASTED ТРЕКОВ (ПУБЛИЧНЫЙ)
 // ============================================================================
+
+void TrackManager::process_coasted_tracks(int sector_index) {
+    if (sector_index < 0 || sector_index >= NUM_SECTORS) {
+        VRL_LOG_WARN(modules::TRACKER, "Invalid sector index: " + std::to_string(sector_index));
+        return;
+    }
+    
+    const auto& track_ids = tracks_by_sector_[sector_index];
+    if (track_ids.empty()) return;
+    
+    VRL_LOG_DEBUG(modules::TRACKER, "Processing coasted tracks in sector " +
+                  std::to_string(sector_index) + ", count=" + std::to_string(track_ids.size()));
+    
+    std::vector<uint64_t> to_remove;
+    
+    for (uint64_t track_id : track_ids) {
+        Track* track = track_pool_.get_track(track_id);
+        if (!track || track->state == 3) continue;
+        
+        if (track->updated_in_current_sector) continue;
+        
+        track->coast_count++;
+        
+        if (track->coast_count >= static_cast<uint32_t>(config_.max_coast_revolutions)) {
+            VRL_LOG_DEBUG(modules::TRACKER, "Track " + std::to_string(track_id) +
+                          " dropped (coast_count=" + std::to_string(track->coast_count) +
+                          ", max=" + std::to_string(config_.max_coast_revolutions) + ")");
+            to_remove.push_back(track_id);
+            continue;
+        }
+        
+        auto [pred_x, pred_y] = predict_position(*track, 4096);
+        grid_index_.update_track(track->id, pred_x, pred_y);
+        
+        int pred_az_maia = get_azimuth_from_xy(pred_x, pred_y);
+        int new_sector = get_sector_from_azimuth(static_cast<uint16_t>(pred_az_maia));
+        update_track_sector(track->id, new_sector);
+        
+        if (track->state == 1) {
+            track->state = 2;
+            VRL_LOG_TRACE(modules::TRACKER, "Track " + std::to_string(track_id) +
+                          " coasting, count=" + std::to_string(track->coast_count));
+        }
+    }
+    
+    for (uint64_t track_id : to_remove) {
+        remove_track(track_id);
+    }
+}
+
+// ============================================================================
+// ОЧИСТКА ФЛАГОВ (ПУБЛИЧНЫЙ)
+// ============================================================================
+
+void TrackManager::clear_updated_flags_for_sector(int sector) {
+    auto it = tracks_to_clear_flag_.begin();
+    while (it != tracks_to_clear_flag_.end()) {
+        if (it->second == sector) {
+            Track* track = track_pool_.get_track(it->first);
+            if (track) {
+                track->updated_in_current_sector = false;
+            }
+            it = tracks_to_clear_flag_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+// ============================================================================
+// ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ (ПРИВАТНЫЕ)
+// ============================================================================
+
+int TrackManager::get_azimuth_from_xy(double x, double y) const {
+    double az_rad = std::atan2(x, y);
+    if (az_rad < 0) az_rad += 2.0 * M_PI;
+    return static_cast<int>(az_rad * 4096.0 / (2.0 * M_PI));
+}
 
 std::pair<double, double> TrackManager::get_cluster_center(const Cluster& cluster) const {
     const auto& indices = cluster.get_indices();
@@ -323,13 +337,6 @@ Plot::SourceType TrackManager::get_cluster_source_type(const Cluster& cluster) c
     } else {
         return Plot::SourceType::MIXED;
     }
-}
-
-int TrackManager::analyze_cluster_for_targets(const Cluster& cluster) const {
-    // TODO: заглушка, позже реализовать анализ
-    // Пока всегда возвращаем 1
-    (void)cluster;
-    return 1;
 }
 
 Plot TrackManager::create_plot_from_cluster(const Cluster& cluster) const {
@@ -374,13 +381,6 @@ Plot TrackManager::create_plot_from_cluster(const Cluster& cluster) const {
     return plot;
 }
 
-double TrackManager::calculate_distance(const Track& track, const Cluster& cluster) const {
-    auto [cx, cy] = get_cluster_center(cluster);
-    double dx = track.x - cx;
-    double dy = track.y - cy;
-    return std::sqrt(dx*dx + dy*dy);
-}
-
 bool TrackManager::is_candidate(const Track& track, const Cluster& cluster) const {
     double distance_km = calculate_distance(track, cluster) / 1000.0;
     if (distance_km > config_.max_candidate_distance_km) {
@@ -401,8 +401,20 @@ bool TrackManager::is_candidate(const Track& track, const Cluster& cluster) cons
     return true;
 }
 
+double TrackManager::calculate_distance(const Track& track, const Cluster& cluster) const {
+    auto [cx, cy] = get_cluster_center(cluster);
+    double dx = track.x - cx;
+    double dy = track.y - cy;
+    return std::sqrt(dx*dx + dy*dy);
+}
+
+int TrackManager::analyze_cluster_for_targets(const Cluster& cluster) const {
+    (void)cluster;
+    return 1;
+}
+
 // ============================================================================
-// УПРАВЛЕНИЕ ТРЕКАМИ
+// УПРАВЛЕНИЕ ТРЕКАМИ (ПРИВАТНЫЕ)
 // ============================================================================
 
 void TrackManager::create_track_from_cluster(uint64_t cluster_id) {
@@ -438,7 +450,7 @@ void TrackManager::create_track_from_cluster(uint64_t cluster_id) {
     track->uvd_data20 = plot.uvd_data20;
     track->altitude = plot.altitude;
     track->spi = plot.spi;
-    track->state = 0;  // NEW
+    track->state = 0;
     track->hit_count = 1;
     track->coast_count = 0;
     track->last_update_time = global_maia_counter_ + plot.azimuth_maia;
@@ -467,13 +479,11 @@ void TrackManager::update_track_with_plot(uint64_t track_id, const Plot& plot) {
         return;
     }
     
-    // Обновляем позицию
     track->x = plot.x;
     track->y = plot.y;
     track->azimuth_maia = plot.azimuth_maia;
     track->range_bins = plot.range_bins;
     
-    // Обновляем коды
     if (plot.source_type == Plot::SourceType::RBS) {
         track->mode3a_code = plot.mode3a_code;
         track->spi = plot.spi;
@@ -482,7 +492,6 @@ void TrackManager::update_track_with_plot(uint64_t track_id, const Plot& plot) {
         track->altitude = plot.altitude;
     }
     
-    // Обновляем состояние
     track->hit_count++;
     track->coast_count = 0;
     track->last_update_time = global_maia_counter_ + plot.azimuth_maia;
@@ -491,35 +500,27 @@ void TrackManager::update_track_with_plot(uint64_t track_id, const Plot& plot) {
     track->candidate_cluster_ids.clear();
     
     if (track->hit_count >= 3 && track->state == 0) {
-        track->state = 1;  // ACTIVE
+        track->state = 1;
         VRL_LOG_DEBUG(modules::TRACKER, "Track " + std::to_string(track_id) + " confirmed");
     }
     
-    // === ИЗМЕНЕНИЕ: для обновлённого трека используем ПРОГНОЗИРУЕМЫЙ азимут ===
-    // Прогнозируем позицию на текущий момент (текущий азимут)
     auto [pred_x, pred_y] = predict_position(*track, current_azimuth_);
-    
-    // Обновляем GridIndex с прогнозируемой позицией
     grid_index_.update_track(track->id, pred_x, pred_y);
     
-    // Сектор тоже определяем по прогнозируемому азимуту
-    // Для этого нужно получить прогнозируемый азимут
-    // Пока используем текущий азимут для сектора (он близок к прогнозируемому)
     int new_sector = get_sector_from_azimuth(track->azimuth_maia);
     update_track_sector(track->id, new_sector);
     
     updated_track_ids_.push_back(track->id);
     
     VRL_LOG_DEBUG(modules::TRACKER, "Track updated: id=" +
-                  std::to_string(track->id) + ", plot_index=" + std::to_string(plot_index) +
-                  ", pred_x=" + std::to_string(pred_x) + ", pred_y=" + std::to_string(pred_y));
+                  std::to_string(track->id) + ", plot_index=" + std::to_string(plot_index));
 }
 
 void TrackManager::remove_track(uint64_t track_id) {
     Track* track = track_pool_.get_track(track_id);
     if (!track) return;
     
-    track->state = 3;  // DROPPED
+    track->state = 3;
     grid_index_.remove_track(track_id);
     
     for (int i = 0; i < NUM_SECTORS; ++i) {
@@ -530,38 +531,7 @@ void TrackManager::remove_track(uint64_t track_id) {
 }
 
 // ============================================================================
-// ОЧИСТКА ФЛАГОВ
-// ============================================================================
-
-void TrackManager::clear_updated_flags_for_sector(int sector) {
-    auto it = tracks_to_clear_flag_.begin();
-    while (it != tracks_to_clear_flag_.end()) {
-        if (it->second == sector) {
-            Track* track = track_pool_.get_track(it->first);
-            if (track) {
-                track->updated_in_current_sector = false;
-            }
-            it = tracks_to_clear_flag_.erase(it);
-        } else {
-            ++it;
-        }
-    }
-}
-
-void TrackManager::remove_cluster_from_track_candidates(uint64_t track_id, uint64_t cluster_id) {
-    Track* track = track_pool_.get_track(track_id);
-    if (!track) return;
-    
-    auto it = std::find(track->candidate_cluster_ids.begin(),
-                        track->candidate_cluster_ids.end(),
-                        cluster_id);
-    if (it != track->candidate_cluster_ids.end()) {
-        track->candidate_cluster_ids.erase(it);
-    }
-}
-
-// ============================================================================
-// ОБРАБОТКА ЗАКРЫТЫХ КЛАСТЕРОВ
+// ОБРАБОТКА КЛАСТЕРОВ (ПРИВАТНЫЕ)
 // ============================================================================
 
 void TrackManager::process_closed_clusters() {
@@ -613,10 +583,6 @@ void TrackManager::process_closed_clusters() {
     }
 }
 
-// ============================================================================
-// ОБРАБОТКА ЗАДЕРЖАННЫХ КЛАСТЕРОВ (ОСНОВНАЯ ЛОГИКА)
-// ============================================================================
-
 void TrackManager::process_delayed_sector(int sector_index) {
     auto delayed_ids = cluster_pool_.take_delayed_clusters(sector_index);
     if (delayed_ids.empty()) return;
@@ -631,11 +597,9 @@ void TrackManager::process_delayed_sector(int sector_index) {
             continue;
         }
         
-        // Анализ кластера на число целей (заглушка → 1)
         int num_targets = analyze_cluster_for_targets(*cluster);
-        (void)num_targets;  // пока не используем
+        (void)num_targets;
         
-        // === ЖЁСТКАЯ ПРОВЕРКА ПО СТРОБУ ===
         std::vector<uint64_t> valid_candidates;
         for (uint64_t track_id : cluster->candidate_track_ids) {
             Track* track = track_pool_.get_track(track_id);
@@ -649,18 +613,15 @@ void TrackManager::process_delayed_sector(int sector_index) {
             }
         }
         
-        // === ПРИНЯТИЕ РЕШЕНИЯ ===
         if (valid_candidates.empty()) {
             VRL_LOG_TRACE(modules::TRACKER, "No valid candidates for cluster " +
                           std::to_string(cluster_id) + ", creating new track");
             process_cluster(cluster_id);
         } else {
-            // Пока берём первый кандидат
             uint64_t best_track_id = valid_candidates[0];
             Plot plot = create_plot_from_cluster(*cluster);
             update_track_with_plot(best_track_id, plot);
             
-            // Запоминаем для очистки флага через 4 сектора
             int clear_sector = (sector_index + 4) % NUM_SECTORS;
             tracks_to_clear_flag_.push_back({best_track_id, clear_sector});
             
@@ -668,7 +629,6 @@ void TrackManager::process_delayed_sector(int sector_index) {
                           " updated track " + std::to_string(best_track_id));
         }
         
-        // === ОЧИСТКА СВЯЗЕЙ ===
         for (uint64_t track_id : cluster->candidate_track_ids) {
             Track* track = track_pool_.get_track(track_id);
             if (track) {
@@ -684,18 +644,21 @@ void TrackManager::process_delayed_sector(int sector_index) {
     }
 }
 
-// ============================================================================
-// ОБРАБОТКА ШИРОКИХ КЛАСТЕРОВ
-// ============================================================================
-
-void TrackManager::process_wide_clusters() {
-    // TODO: реализовать позже
-    VRL_LOG_TRACE(modules::TRACKER, "process_wide_clusters");
+void TrackManager::remove_cluster_from_track_candidates(uint64_t track_id, uint64_t cluster_id) {
+    Track* track = track_pool_.get_track(track_id);
+    if (!track) return;
+    
+    auto it = std::find(track->candidate_cluster_ids.begin(),
+                        track->candidate_cluster_ids.end(),
+                        cluster_id);
+    if (it != track->candidate_cluster_ids.end()) {
+        track->candidate_cluster_ids.erase(it);
+    }
 }
 
-// ============================================================================
-// ОБРАБОТКА КЛАСТЕРА (СОЗДАНИЕ НОВОГО ТРЕКА)
-// ============================================================================
+void TrackManager::process_wide_clusters() {
+    VRL_LOG_TRACE(modules::TRACKER, "process_wide_clusters");
+}
 
 void TrackManager::process_cluster(uint64_t cluster_id) {
     Cluster* cluster = cluster_pool_.get_cluster(cluster_id);
@@ -708,13 +671,11 @@ void TrackManager::process_cluster(uint64_t cluster_id) {
     VRL_LOG_DEBUG(modules::TRACKER, "Processing cluster " + std::to_string(cluster_id) +
                   " (size=" + std::to_string(cluster->size()) + ")");
     
-    // TODO: анализ на несколько целей
-    // Пока просто создаём один трек
     create_track_from_cluster(cluster_id);
 }
 
 // ============================================================================
-// ДОСТУП К ДАННЫМ
+// ДОСТУП К ДАННЫМ (ПУБЛИЧНЫЕ)
 // ============================================================================
 
 Track* TrackManager::get_track(uint64_t id) {
@@ -730,7 +691,9 @@ std::vector<Plot> TrackManager::get_plots() const {
     auto all_tracks = track_pool_.get_all_tracks();
     
     for (const Track* track : all_tracks) {
-        if (track && track->state != 3) {
+        if (track && track->state != 3 && track->id != 0) {
+            if (track->x == 0.0 && track->y == 0.0) continue;
+            
             Plot plot;
             plot.x = track->x;
             plot.y = track->y;
@@ -741,6 +704,9 @@ std::vector<Plot> TrackManager::get_plots() const {
             plot.altitude = track->altitude;
             plot.spi = track->spi;
             plot.confidence = (track->state == 1) ? 1.0 : 0.5;
+            plot.source_type = (track->mode3a_code != 0) ? 
+                Plot::SourceType::RBS : Plot::SourceType::UVD;
+            
             plots.push_back(plot);
         }
     }
@@ -765,7 +731,7 @@ const Plot* TrackManager::get_plot(uint64_t track_id) const {
 }
 
 // ============================================================================
-// УПРАВЛЕНИЕ
+// УПРАВЛЕНИЕ (ПУБЛИЧНЫЕ)
 // ============================================================================
 
 void TrackManager::reset() {
