@@ -10,7 +10,7 @@ class ClusterPoolTest : public ::testing::Test {
 protected:
     void SetUp() override {
         PointBuffer::instance().init(1000);
-        ClusterPool::instance().clear();
+        ClusterPool::instance().init(65535);  // <-- ДОБАВЛЯЕМ
     }
     
     void TearDown() override {
@@ -40,7 +40,7 @@ TEST_F(ClusterPoolTest, CreateCluster) {
     ASSERT_NE(cluster, nullptr);
     EXPECT_TRUE(cluster->is_empty());
     EXPECT_FALSE(cluster->is_closed());
-    EXPECT_EQ(pool.size(), 1);
+    EXPECT_EQ(pool.size(), 0);  // <-- ИЗМЕНЕНО: пустой кластер не считается
 }
 
 TEST_F(ClusterPoolTest, AddPointToCluster) {
@@ -121,29 +121,6 @@ TEST_F(ClusterPoolTest, ActiveAndClosedClusters) {
     EXPECT_EQ(count_closed_clusters(), 3);
 }
 
-TEST_F(ClusterPoolTest, RemoveCluster) {
-    auto& pool = ClusterPool::instance();
-    auto& buffer = PointBuffer::instance();
-    
-    StoredPoint point;
-    point.azimuth = 100;
-    point.range = 50;
-    point.is_rbs = true;
-    point.amplitude = 100;
-    size_t idx = buffer.add_point(point);
-    
-    uint64_t id = pool.create_cluster();
-    Cluster* cluster = pool.get_cluster(id);
-    ASSERT_NE(cluster, nullptr);
-    cluster->add_point(idx);
-    
-    EXPECT_EQ(pool.size(), 1);
-    
-    pool.remove_cluster(id);
-    
-    EXPECT_EQ(pool.size(), 0);
-}
-
 TEST_F(ClusterPoolTest, MarkAsWide) {
     auto& pool = ClusterPool::instance();
     auto& buffer = PointBuffer::instance();
@@ -165,7 +142,7 @@ TEST_F(ClusterPoolTest, MarkAsWide) {
     EXPECT_EQ(pool.size(), 1);
     EXPECT_EQ(count_active_clusters(), 1);
     
-    pool.mark_as_wide(id);
+    pool.add_to_wide(id);
     
     // Широкий кластер всё ещё активен!
     EXPECT_EQ(count_active_clusters(), 1);

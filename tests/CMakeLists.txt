@@ -458,3 +458,27 @@ add_test(NAME test_integration
     COMMAND test_integration
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/tests
 )
+
+# НОВЫЙ ТЕСТ: ClusterPoolFull
+add_executable(test_cluster_pool_full
+    test_cluster_pool_full.cpp
+)
+
+target_link_libraries(test_cluster_pool_full
+    vrl_radar
+    GTest::gtest_main
+)
+
+target_compile_definitions(test_cluster_pool_full
+    PRIVATE
+        $<$<BOOL:${ENABLE_VERBOSE_LOGGING}>:ENABLE_VERBOSE_LOGGING>
+)
+
+set_target_properties(test_cluster_pool_full PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests"
+)
+
+add_test(NAME test_cluster_pool_full 
+    COMMAND test_cluster_pool_full
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/tests
+)

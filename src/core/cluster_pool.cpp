@@ -15,88 +15,174 @@ ClusterPool& ClusterPool::instance() {
 }
 
 // ============================================================================
+// ИНИЦИАЛИЗАЦИЯ
+// ============================================================================
+
+void ClusterPool::init(size_t max_clusters) {
+    if (initialized_) {
+        VRL_LOG_WARN(modules::CORE, "ClusterPool already initialized");
+        return;
+    }
+    
+    if (max_clusters == 0) {
+        VRL_LOG_ERROR(modules::CORE, "max_clusters must be > 0");
+        return;
+    }
+    
+    max_clusters_ = max_clusters;
+    clusters_.resize(max_clusters_);
+    metadata_.resize(max_clusters_);
+    
+    for (size_t i = 0; i < max_clusters_; ++i) {
+        clusters_[i].set_id(i + 1);
+        clusters_[i].enable_debug(debug_enabled_);
+        metadata_[i] = Metadata{};
+    }
+    
+    next_slot_ = 0;
+    initialized_ = true;
+    
+    VRL_LOG_INFO(modules::CORE, "ClusterPool initialized with " + std::to_string(max_clusters_) + " slots");
+}
+
+// ============================================================================
 // СОЗДАНИЕ
 // ============================================================================
 
 uint64_t ClusterPool::create_cluster() {
-    std::lock_guard<std::mutex> lock(mutex_);
+    auto debug = debug_enabled_;
     
-    uint64_t id = next_id_++;
-    auto cluster = std::make_unique<Cluster>();
+    if (!initialized_) {
+        VRL_LOG_ERROR(modules::CORE, "ClusterPool not initialized");
+        return 0;
+    }
     
-    clusters_[id] = std::move(cluster);
-    active_ids_.push_back(id);
-    metadata_[id] = Metadata{};
+    size_t slot = next_slot_++;
+    if (slot >= max_clusters_) {
+        slot = 0;
+        // Циклическое переполнение - потребитель должен был завершить работу с кластером
+#ifdef CMAKE_BUILD_TYPE_DEBUG
+        if (debug) {
+            uint64_t old_id = clusters_[slot].get_id();
+            std::cout << "[ClusterPool] create_cluster: OVERWRITE slot=" << slot 
+                      << ", old_id=" << old_id << " (consumer must have finished with it)" << std::endl;
+        }
+#endif
+        // НЕ удаляем old_id из списков - это ответственность потребителя
+    }
     
-    std::cout << "[DEBUG] create_cluster: id=" << id 
-              << ", active_ids_.size()=" << active_ids_.size() << std::endl;
+    uint64_t id = static_cast<uint64_t>(slot + 1);
     
-    VRL_LOG_DEBUG(modules::CORE, "Cluster created, id=" + std::to_string(id));
+    clusters_[slot] = Cluster();
+    clusters_[slot].set_id(id);
+    clusters_[slot].enable_debug(debug_enabled_);
+    metadata_[slot] = Metadata{};
+    metadata_[slot].state = ClusterState::ACTIVE;
+    
+#ifdef CMAKE_BUILD_TYPE_DEBUG
+    if (debug) {
+        std::cout << "[ClusterPool] create_cluster: id=" << id << ", slot=" << slot << std::endl;
+    }
+#endif
+    
+    VRL_LOG_DEBUG(modules::CORE, "Cluster created, id=" + std::to_string(id) + ", slot=" + std::to_string(slot));
     
     return id;
 }
 
 // ============================================================================
-// ЗАКРЫТИЕ
+// ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ
 // ============================================================================
 
-void ClusterPool::close_cluster(uint64_t id, int sector) {
-    std::lock_guard<std::mutex> lock(mutex_);
+bool ClusterPool::is_valid_id(uint64_t id) const {
+    if (id == 0) return false;
+    size_t slot = static_cast<size_t>(id - 1);
+    return slot < max_clusters_;
+}
+
+// ============================================================================
+// ПОЛУЧЕНИЕ КЛАСТЕРА
+// ============================================================================
+
+Cluster* ClusterPool::get_cluster(uint64_t id) {
+    if (!is_valid_id(id)) {
+        return nullptr;
+    }
     
-    std::cout << "[DEBUG] close_cluster: id=" << id 
-              << ", sector=" << sector 
-              << ", active_ids_.size() before=" << active_ids_.size() << std::endl;
+    size_t slot = static_cast<size_t>(id - 1);
+    if (slot >= max_clusters_) {
+        return nullptr;
+    }
+    
+    if (clusters_[slot].get_id() != id) {
+        return nullptr;
+    }
+    
+    return &clusters_[slot];
+}
+
+const Cluster* ClusterPool::get_cluster(uint64_t id) const {
+    if (!is_valid_id(id)) {
+        return nullptr;
+    }
+    
+    size_t slot = static_cast<size_t>(id - 1);
+    if (slot >= max_clusters_) {
+        return nullptr;
+    }
+    
+    if (clusters_[slot].get_id() != id) {
+        return nullptr;
+    }
+    
+    return &clusters_[slot];
+}
+
+std::vector<uint64_t> ClusterPool::get_closed_clusters() const {
+    std::vector<uint64_t> result;
+    for (const auto& vec : closed_by_sector_) {
+        result.insert(result.end(), vec.begin(), vec.end());
+    }
+    return result;
+}
+
+void ClusterPool::add_to_delayed(uint64_t id, int sector) {
+    auto debug = debug_enabled_;
     
     if (!is_valid_id(id)) {
         VRL_LOG_ERROR(modules::CORE, "Invalid cluster id: " + std::to_string(id));
         return;
     }
     
-    auto& cluster = clusters_[id];
-    cluster->close();
-    
-    metadata_[id].state = ClusterState::CLOSED;
-    metadata_[id].sector_index = sector;
-    metadata_[id].close_azimuth = cluster->get_last_azimuth();
-    
-    remove_from_active(id);
-    
-    if (sector >= 0 && sector < NUM_SECTORS) {
-        closed_by_sector_[sector].push_back(id);
-        std::cout << "[DEBUG] close_cluster: added to closed_by_sector[" << sector 
-                  << "], size=" << closed_by_sector_[sector].size() << std::endl;
-    } else {
-        VRL_LOG_WARN(modules::CORE, "Invalid sector for cluster: " + std::to_string(sector));
-    }
-}
-
-// ============================================================================
-// ШИРОКИЙ КЛАСТЕР
-// ============================================================================
-
-void ClusterPool::mark_as_wide(uint64_t id) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    
-    std::cout << "[DEBUG] mark_as_wide: id=" << id << std::endl;
-    
-    if (!is_valid_id(id)) {
-        VRL_LOG_ERROR(modules::CORE, "Invalid cluster id: " + std::to_string(id));
+    if (sector < 0 || sector >= NUM_SECTORS) {
+        VRL_LOG_ERROR(modules::CORE, "Invalid sector: " + std::to_string(sector));
         return;
     }
     
-    // НЕ УДАЛЯЕМ из активных! Широкий кластер всё ещё активен
-    metadata_[id].state = ClusterState::WIDE;
-    wide_ids_.push_back(id);
+    size_t slot = static_cast<size_t>(id - 1);
     
-    std::cout << "[DEBUG] mark_as_wide: wide_ids_.size()=" << wide_ids_.size() << std::endl;
+    // Удаляем из закрытых списков
+    remove_from_closed(id);
+    
+    // Добавляем в задержанные
+    metadata_[slot].state = ClusterState::DELAYED;
+    metadata_[slot].sector_index = sector;
+    delayed_ids_.push_back(id);
+    
+#ifdef CMAKE_BUILD_TYPE_DEBUG
+    if (debug) {
+        std::cout << "[ClusterPool] add_to_delayed: id=" << id 
+                  << ", sector=" << sector << std::endl;
+    }
+#endif
+    
+    VRL_LOG_DEBUG(modules::CORE, "Cluster " + std::to_string(id) + 
+                  " added to delayed sector " + std::to_string(sector));
 }
 
-// ============================================================================
-// ВЗЯТИЕ КЛАСТЕРОВ ДЛЯ ОБРАБОТКИ
-// ============================================================================
 
-std::vector<uint64_t> ClusterPool::take_closed_clusters(int sector) {
-    std::lock_guard<std::mutex> lock(mutex_);
+std::vector<uint64_t> ClusterPool::take_delayed_clusters(int sector) {
+    auto debug = debug_enabled_;
     
     std::vector<uint64_t> result;
     
@@ -105,77 +191,144 @@ std::vector<uint64_t> ClusterPool::take_closed_clusters(int sector) {
         return result;
     }
     
-    std::cout << "[DEBUG] take_closed_clusters: sector=" << sector 
-              << ", closed_by_sector_[sector].size()=" << closed_by_sector_[sector].size() << std::endl;
+    // Собираем все задержанные кластеры из указанного сектора
+    // Задержанные кластеры хранятся в delayed_ids_ с привязкой к сектору
+    // Нужно пройти по delayed_ids_ и выбрать те, у которых sector_index == sector
     
-    result = std::move(closed_by_sector_[sector]);
-    closed_by_sector_[sector].clear();
-    
-    std::cout << "[DEBUG] take_closed_clusters: result.size()=" << result.size() << std::endl;
-    
-    for (uint64_t id : result) {
-        std::cout << "[DEBUG] take_closed_clusters: processing id=" << id << std::endl;
+    auto it = delayed_ids_.begin();
+    while (it != delayed_ids_.end()) {
+        uint64_t id = *it;
+        size_t slot = static_cast<size_t>(id - 1);
         
-        auto it = metadata_.find(id);
-        if (it != metadata_.end()) {
-            std::cout << "[DEBUG] take_closed_clusters: found in metadata, state=" 
-                      << static_cast<int>(it->second.state) << std::endl;
-            it->second.state = ClusterState::DELAYED;
-            it->second.delayed_since = static_cast<uint32_t>(
-                std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::system_clock::now().time_since_epoch()
-                ).count()
-            );
-            std::cout << "[DEBUG] take_closed_clusters: updated state to DELAYED" << std::endl;
+        if (slot < max_clusters_ && metadata_[slot].sector_index == sector) {
+            result.push_back(id);
+            it = delayed_ids_.erase(it);
         } else {
-            std::cout << "[DEBUG] take_closed_clusters: NOT found in metadata!" << std::endl;
+            ++it;
         }
-        delayed_ids_.push_back(id);
     }
     
-    std::cout << "[DEBUG] take_closed_clusters: delayed_ids_.size()=" << delayed_ids_.size() << std::endl;
+#ifdef CMAKE_BUILD_TYPE_DEBUG
+    if (debug) {
+        std::cout << "[ClusterPool] take_delayed_clusters: sector=" << sector 
+                  << ", count=" << result.size() << std::endl;
+    }
+#endif
+    
+    VRL_LOG_DEBUG(modules::CORE, "Took " + std::to_string(result.size()) + 
+                  " delayed clusters from sector " + std::to_string(sector));
     
     return result;
 }
 
-std::vector<uint64_t> ClusterPool::take_wide_clusters() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    
-    std::vector<uint64_t> result = std::move(wide_ids_);
-    wide_ids_.clear();
-    
-    std::cout << "[DEBUG] take_wide_clusters: took " << result.size() << " wide clusters" << std::endl;
-    
-    return result;
-}
-
-// ============================================================================
-// УДАЛЕНИЕ КЛАСТЕРА
-// ============================================================================
-
-void ClusterPool::remove_cluster(uint64_t id) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    
-    std::cout << "[DEBUG] remove_cluster: id=" << id << std::endl;
-    
+bool ClusterPool::exists(uint64_t id) const {
     if (!is_valid_id(id)) {
-        VRL_LOG_ERROR(modules::CORE, "Invalid cluster id: " + std::to_string(id));
+        return false;
+    }
+    
+    // Проверяем наличие в активных
+    auto it_active = std::find(active_ids_.begin(), active_ids_.end(), id);
+    if (it_active != active_ids_.end()) {
+        return true;
+    }
+    
+    // Проверяем наличие в закрытых (по всем секторам)
+    for (const auto& vec : closed_by_sector_) {
+        auto it_closed = std::find(vec.begin(), vec.end(), id);
+        if (it_closed != vec.end()) {
+            return true;
+        }
+    }
+    
+    // Проверяем наличие в широких
+    auto it_wide = std::find(wide_ids_.begin(), wide_ids_.end(), id);
+    if (it_wide != wide_ids_.end()) {
+        return true;
+    }
+    
+    // Проверяем наличие в задержанных
+    auto it_delayed = std::find(delayed_ids_.begin(), delayed_ids_.end(), id);
+    if (it_delayed != delayed_ids_.end()) {
+        return true;
+    }
+    
+    return false;
+}
+
+std::vector<Cluster*> ClusterPool::get_all_clusters() const {
+    std::vector<Cluster*> result;
+    result.reserve(max_clusters_);
+    for (size_t i = 0; i < max_clusters_; ++i) {
+        result.push_back(const_cast<Cluster*>(&clusters_[i]));
+    }
+    return result;
+}
+
+std::vector<Cluster*> ClusterPool::get_active_clusters() const {
+    std::vector<Cluster*> result;
+    result.reserve(active_ids_.size());
+    for (uint64_t id : active_ids_) {
+        const Cluster* const_cluster = get_cluster(id);
+        if (const_cluster && !const_cluster->is_closed()) {
+            result.push_back(const_cast<Cluster*>(const_cluster));
+        }
+    }
+    return result;
+}
+
+
+std::vector<uint64_t> ClusterPool::get_all_ids() const {
+    std::vector<uint64_t> result;
+    result.reserve(active_ids_.size());
+    for (uint64_t id : active_ids_) {
+        result.push_back(id);
+    }
+    return result;
+}
+
+
+void ClusterPool::merge_clusters(uint64_t keep_id, uint64_t remove_id) {
+    auto debug = debug_enabled_;
+    
+    if (!is_valid_id(keep_id) || !is_valid_id(remove_id)) {
+        VRL_LOG_ERROR(modules::CORE, "Invalid cluster id for merge");
         return;
     }
     
-    // Удаляем из всех списков
-    remove_from_active(id);
-    remove_from_closed(id);
-    remove_from_wide(id);
-    remove_from_delayed(id);
+    if (keep_id == remove_id) {
+        VRL_LOG_WARN(modules::CORE, "Attempt to merge cluster with itself");
+        return;
+    }
     
-    // Удаляем метаданные
-    metadata_.erase(id);
+    size_t keep_slot = static_cast<size_t>(keep_id - 1);
+    size_t remove_slot = static_cast<size_t>(remove_id - 1);
     
-    // Удаляем кластер
-    clusters_.erase(id);
+    auto& keep_cluster = clusters_[keep_slot];
+    auto& remove_cluster = clusters_[remove_slot];
     
-    std::cout << "[DEBUG] remove_cluster: done, clusters_.size()=" << clusters_.size() << std::endl;
+#ifdef CMAKE_BUILD_TYPE_DEBUG
+    if (debug) {
+        std::cout << "[ClusterPool] merge_clusters: keep=" << keep_id 
+                  << ", remove=" << remove_id << std::endl;
+    }
+#endif
+    
+    // Переносим все точки из remove_cluster в keep_cluster
+    for (size_t idx : remove_cluster.get_indices()) {
+        keep_cluster.add_point(idx);
+    }
+    
+    // Удаляем remove_id из всех списков
+    remove_from_active(remove_id);
+    
+    // Сбрасываем удалённый кластер
+    remove_cluster = Cluster();
+    remove_cluster.set_id(remove_id);
+    remove_cluster.enable_debug(debug_enabled_);
+    metadata_[remove_slot] = Metadata{};
+    
+    VRL_LOG_DEBUG(modules::CORE, "Clusters merged: " + std::to_string(keep_id) + 
+                  " kept, " + std::to_string(remove_id) + " removed");
 }
 
 // ============================================================================
@@ -186,9 +339,6 @@ void ClusterPool::remove_from_active(uint64_t id) {
     auto it = std::find(active_ids_.begin(), active_ids_.end(), id);
     if (it != active_ids_.end()) {
         active_ids_.erase(it);
-        std::cout << "[DEBUG] remove_from_active: removed id=" << id << std::endl;
-    } else {
-        std::cout << "[DEBUG] remove_from_active: id=" << id << " not found in active_ids_" << std::endl;
     }
 }
 
@@ -197,20 +347,15 @@ void ClusterPool::remove_from_closed(uint64_t id) {
         auto it = std::find(vec.begin(), vec.end(), id);
         if (it != vec.end()) {
             vec.erase(it);
-            std::cout << "[DEBUG] remove_from_closed: removed id=" << id << std::endl;
             return;
         }
     }
-    std::cout << "[DEBUG] remove_from_closed: id=" << id << " not found in any closed_by_sector_" << std::endl;
 }
 
 void ClusterPool::remove_from_wide(uint64_t id) {
     auto it = std::find(wide_ids_.begin(), wide_ids_.end(), id);
     if (it != wide_ids_.end()) {
         wide_ids_.erase(it);
-        std::cout << "[DEBUG] remove_from_wide: removed id=" << id << std::endl;
-    } else {
-        std::cout << "[DEBUG] remove_from_wide: id=" << id << " not found in wide_ids_" << std::endl;
     }
 }
 
@@ -218,57 +363,209 @@ void ClusterPool::remove_from_delayed(uint64_t id) {
     auto it = std::find(delayed_ids_.begin(), delayed_ids_.end(), id);
     if (it != delayed_ids_.end()) {
         delayed_ids_.erase(it);
-        std::cout << "[DEBUG] remove_from_delayed: removed id=" << id << std::endl;
-    } else {
-        std::cout << "[DEBUG] remove_from_delayed: id=" << id << " not found in delayed_ids_" << std::endl;
     }
 }
 
 // ============================================================================
-// ОЧИСТКА ЗАДЕРЖАННЫХ КЛАСТЕРОВ
+// ЗАКРЫТИЕ
+// ============================================================================
+
+void ClusterPool::close_cluster(uint64_t id, int sector) {
+    auto debug = debug_enabled_;
+    
+    if (!is_valid_id(id)) {
+        VRL_LOG_ERROR(modules::CORE, "Invalid cluster id: " + std::to_string(id));
+        return;
+    }
+    
+    size_t slot = static_cast<size_t>(id - 1);
+    auto& cluster = clusters_[slot];
+    auto& meta = metadata_[slot];
+    
+    cluster.close();
+    
+    if (sector >= 0 && sector < NUM_SECTORS) {
+        meta.state = ClusterState::CLOSED;
+        meta.sector_index = sector;
+        meta.close_azimuth = cluster.get_last_azimuth();
+        
+        remove_from_active(id);
+        remove_from_wide(id);
+        closed_by_sector_[sector].push_back(id);
+        
+#ifdef CMAKE_BUILD_TYPE_DEBUG
+        if (debug) {
+            std::cout << "[ClusterPool] close_cluster: id=" << id << ", sector=" << sector 
+                      << ", size=" << cluster.size() << std::endl;
+        }
+#endif
+        
+        VRL_LOG_DEBUG(modules::CORE, "Cluster " + std::to_string(id) + 
+                      " closed in sector " + std::to_string(sector));
+    } else {
+        VRL_LOG_WARN(modules::CORE, "Invalid sector for cluster: " + std::to_string(sector));
+        meta.state = ClusterState::PROCESSED;
+        remove_from_active(id);
+        remove_from_wide(id);
+    }
+}
+
+void ClusterPool::add_to_active(uint64_t id) {
+    auto debug = debug_enabled_;
+    
+    if (!is_valid_id(id)) {
+        VRL_LOG_ERROR(modules::CORE, "Invalid cluster id: " + std::to_string(id));
+        return;
+    }
+    
+    // Проверяем, что кластер уже не в списке
+    auto it = std::find(active_ids_.begin(), active_ids_.end(), id);
+    if (it != active_ids_.end()) {
+        return;
+    }
+    
+    active_ids_.push_back(id);
+    metadata_[id - 1].state = ClusterState::ACTIVE;
+    
+#ifdef CMAKE_BUILD_TYPE_DEBUG
+    if (debug) {
+        std::cout << "[ClusterPool] add_to_active: id=" << id 
+                  << ", active_count=" << active_ids_.size() << std::endl;
+    }
+#endif
+    
+    VRL_LOG_DEBUG(modules::CORE, "Cluster " + std::to_string(id) + " added to active list");
+}
+
+// ============================================================================
+// ШИРОКИЕ КЛАСТЕРЫ
+// ============================================================================
+
+void ClusterPool::add_to_wide(uint64_t id) {
+    auto debug = debug_enabled_;
+    
+    if (!is_valid_id(id)) {
+        VRL_LOG_ERROR(modules::CORE, "Invalid cluster id: " + std::to_string(id));
+        return;
+    }
+    
+    size_t slot = static_cast<size_t>(id - 1);
+    metadata_[slot].state = ClusterState::WIDE;
+    wide_ids_.push_back(id);
+    
+#ifdef CMAKE_BUILD_TYPE_DEBUG
+    if (debug) {
+        std::cout << "[ClusterPool] add_to_wide: id=" << id << ", wide_count=" << wide_ids_.size() << std::endl;
+    }
+#endif
+    
+    VRL_LOG_DEBUG(modules::CORE, "Cluster " + std::to_string(id) + " added to wide list");
+}
+
+std::vector<uint64_t> ClusterPool::take_wide_clusters() {
+    auto debug = debug_enabled_;
+    
+    std::vector<uint64_t> result = std::move(wide_ids_);
+    wide_ids_.clear();
+    
+#ifdef CMAKE_BUILD_TYPE_DEBUG
+    if (debug) {
+        std::cout << "[ClusterPool] take_wide_clusters: count=" << result.size() << std::endl;
+    }
+#endif
+    
+    VRL_LOG_DEBUG(modules::CORE, "Took " + std::to_string(result.size()) + " wide clusters");
+    
+    return result;
+}
+
+// ============================================================================
+// ПОЛУЧЕНИЕ ЗАКРЫТЫХ КЛАСТЕРОВ
+// ============================================================================
+
+std::vector<uint64_t> ClusterPool::take_closed_clusters(int sector) {
+    auto debug = debug_enabled_;
+    
+    std::vector<uint64_t> result;
+    
+    if (sector < 0 || sector >= NUM_SECTORS) {
+        VRL_LOG_WARN(modules::CORE, "Invalid sector index: " + std::to_string(sector));
+        return result;
+    }
+    
+    result = std::move(closed_by_sector_[sector]);
+    closed_by_sector_[sector].clear();
+    
+    for (uint64_t id : result) {
+        size_t slot = static_cast<size_t>(id - 1);
+        if (slot < max_clusters_) {
+            metadata_[slot].state = ClusterState::DELAYED;
+            metadata_[slot].delayed_since = 0;
+        }
+        delayed_ids_.push_back(id);
+    }
+    
+#ifdef CMAKE_BUILD_TYPE_DEBUG
+    if (debug) {
+        std::cout << "[ClusterPool] take_closed_clusters: sector=" << sector 
+                  << ", count=" << result.size() << std::endl;
+    }
+#endif
+    
+    VRL_LOG_DEBUG(modules::CORE, "Took " + std::to_string(result.size()) + 
+                  " clusters from sector " + std::to_string(sector));
+    
+    return result;
+}
+
+// ============================================================================
+// ОЧИСТКА ЗАДЕРЖАННЫХ
 // ============================================================================
 
 size_t ClusterPool::cleanup_delayed_clusters(uint32_t current_revolution, double max_delay) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    auto debug = debug_enabled_;
     
     size_t cleaned = 0;
     auto it = delayed_ids_.begin();
     
     while (it != delayed_ids_.end()) {
         uint64_t id = *it;
+        size_t slot = static_cast<size_t>(id - 1);
         
-        // Проверяем, существует ли ещё кластер
-        if (clusters_.find(id) == clusters_.end()) {
+        if (slot >= max_clusters_) {
             it = delayed_ids_.erase(it);
             cleaned++;
             continue;
         }
         
-        // Проверяем, не истекло ли время
         bool should_remove = false;
-        auto meta_it = metadata_.find(id);
-        if (meta_it != metadata_.end()) {
-            if (max_delay == 0.0) {
-                should_remove = true;
-            } else {
-                uint32_t age = current_revolution - meta_it->second.delayed_since;
-                if (age >= static_cast<uint32_t>(max_delay * 4096)) {
-                    should_remove = true;
-                }
-            }
-        } else {
+        if (max_delay == 0.0) {
             should_remove = true;
+        } else {
+            uint32_t age = current_revolution - metadata_[slot].delayed_since;
+            if (age >= static_cast<uint32_t>(max_delay * 4096)) {
+                should_remove = true;
+            }
         }
         
         if (should_remove) {
-            clusters_.erase(id);
-            metadata_.erase(id);
+            clusters_[slot] = Cluster();
+            clusters_[slot].set_id(id);
+            clusters_[slot].enable_debug(debug_enabled_);
+            metadata_[slot] = Metadata{};
+            
             it = delayed_ids_.erase(it);
             cleaned++;
         } else {
             ++it;
         }
     }
+    
+#ifdef CMAKE_BUILD_TYPE_DEBUG
+    if (debug && cleaned > 0) {
+        std::cout << "[ClusterPool] cleanup_delayed_clusters: cleaned=" << cleaned << std::endl;
+    }
+#endif
     
     if (cleaned > 0) {
         VRL_LOG_DEBUG(modules::CORE, "Cleaned " + std::to_string(cleaned) + " delayed clusters");
@@ -278,94 +575,22 @@ size_t ClusterPool::cleanup_delayed_clusters(uint32_t current_revolution, double
 }
 
 // ============================================================================
-// ПОЛУЧЕНИЕ КЛАСТЕРОВ
-// ============================================================================
-
-Cluster* ClusterPool::get_cluster(uint64_t id) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    
-    auto it = clusters_.find(id);
-    if (it != clusters_.end()) {
-        return it->second.get();
-    }
-    
-    VRL_LOG_ERROR(modules::CORE, "Cluster not found: " + std::to_string(id));
-    return nullptr;
-}
-
-const Cluster* ClusterPool::get_cluster(uint64_t id) const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    
-    auto it = clusters_.find(id);
-    if (it != clusters_.end()) {
-        return it->second.get();
-    }
-    
-    VRL_LOG_ERROR(modules::CORE, "Cluster not found: " + std::to_string(id));
-    return nullptr;
-}
-
-std::vector<Cluster*> ClusterPool::get_all_clusters() const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    
-    std::vector<Cluster*> result;
-    result.reserve(clusters_.size());
-    
-    for (const auto& [id, cluster] : clusters_) {
-        if (cluster) {
-            result.push_back(cluster.get());
-        }
-    }
-    
-    return result;
-}
-
-std::vector<uint64_t> ClusterPool::get_all_ids() const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    
-    std::vector<uint64_t> result;
-    result.reserve(clusters_.size());
-    
-    for (const auto& [id, cluster] : clusters_) {
-        if (cluster) {
-            result.push_back(id);
-        }
-    }
-    
-    return result;
-}
-
-// ============================================================================
 // ПРОВЕРКИ
 // ============================================================================
 
 bool ClusterPool::has_closed_clusters(int sector) const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    
     if (sector < 0 || sector >= NUM_SECTORS) {
         return false;
     }
-    
     return !closed_by_sector_[sector].empty();
 }
 
 bool ClusterPool::has_wide_clusters() const {
-    std::lock_guard<std::mutex> lock(mutex_);
     return !wide_ids_.empty();
 }
 
 bool ClusterPool::has_delayed_clusters() const {
-    std::lock_guard<std::mutex> lock(mutex_);
     return !delayed_ids_.empty();
-}
-
-bool ClusterPool::exists(uint64_t id) const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return clusters_.find(id) != clusters_.end();
-}
-
-bool ClusterPool::is_valid_id(uint64_t id) const {
-    return clusters_.find(id) != clusters_.end() && clusters_.at(id) != nullptr;
 }
 
 // ============================================================================
@@ -373,47 +598,25 @@ bool ClusterPool::is_valid_id(uint64_t id) const {
 // ============================================================================
 
 size_t ClusterPool::count_active_clusters() const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    size_t count = 0;
-    for (const auto& [id, meta] : metadata_) {
-        if (meta.state == ClusterState::ACTIVE || meta.state == ClusterState::WIDE) {
-            count++;
-        }
-    }
-    return count;
+    return active_ids_.size();
 }
 
 size_t ClusterPool::count_closed_clusters() const {
-    std::lock_guard<std::mutex> lock(mutex_);
     size_t count = 0;
-    std::cout << "[DEBUG] count_closed_clusters: metadata_.size()=" << metadata_.size() << std::endl;
-    for (const auto& [id, meta] : metadata_) {
-        std::cout << "[DEBUG] count_closed_clusters: id=" << id 
-                  << ", state=" << static_cast<int>(meta.state) << std::endl;
-        if (meta.state == ClusterState::CLOSED) {
-            count++;
-        }
+    for (const auto& vec : closed_by_sector_) {
+        count += vec.size();
     }
-    std::cout << "[DEBUG] count_closed_clusters: count=" << count << std::endl;
     return count;
 }
 
 size_t ClusterPool::count_delayed_clusters() const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    size_t count = 0;
-    for (const auto& [id, meta] : metadata_) {
-        if (meta.state == ClusterState::DELAYED) {
-            count++;
-        }
-    }
-    return count;
+    return delayed_ids_.size();
 }
 
 size_t ClusterPool::count_wide_clusters() const {
-    std::lock_guard<std::mutex> lock(mutex_);
     size_t count = 0;
-    for (const auto& [id, meta] : metadata_) {
-        if (meta.state == ClusterState::WIDE) {
+    for (size_t i = 0; i < max_clusters_; ++i) {
+        if (metadata_[i].state == ClusterState::WIDE) {
             count++;
         }
     }
@@ -421,13 +624,11 @@ size_t ClusterPool::count_wide_clusters() const {
 }
 
 size_t ClusterPool::size() const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return clusters_.size();
+    return active_ids_.size() + count_closed_clusters() + delayed_ids_.size();
 }
 
 bool ClusterPool::is_empty() const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return clusters_.empty();
+    return active_ids_.empty() && count_closed_clusters() == 0 && delayed_ids_.empty();
 }
 
 // ============================================================================
@@ -435,17 +636,28 @@ bool ClusterPool::is_empty() const {
 // ============================================================================
 
 void ClusterPool::clear() {
-    std::lock_guard<std::mutex> lock(mutex_);
+    auto debug = debug_enabled_;
     
-    clusters_.clear();
+#ifdef CMAKE_BUILD_TYPE_DEBUG
+    if (debug) {
+        std::cout << "[ClusterPool] clear: called" << std::endl;
+    }
+#endif
+    
+    for (size_t i = 0; i < max_clusters_; ++i) {
+        clusters_[i] = Cluster();
+        clusters_[i].set_id(i + 1);
+        clusters_[i].enable_debug(debug_enabled_);
+        metadata_[i] = Metadata{};
+    }
+    
     active_ids_.clear();
     for (auto& vec : closed_by_sector_) {
         vec.clear();
     }
     wide_ids_.clear();
     delayed_ids_.clear();
-    metadata_.clear();
-    next_id_ = 1;
+    next_slot_ = 0;
     
     VRL_LOG_INFO(modules::CORE, "ClusterPool cleared");
 }
@@ -455,16 +667,14 @@ void ClusterPool::clear() {
 // ============================================================================
 
 ClusterPool::Stats ClusterPool::get_stats() const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    
     Stats stats;
-    stats.total_clusters = clusters_.size();
+    stats.total_clusters = size();
     stats.active_clusters = active_ids_.size();
     
     for (const auto& vec : closed_by_sector_) {
         stats.closed_clusters += vec.size();
     }
-    stats.wide_clusters = wide_ids_.size();
+    stats.wide_clusters = count_wide_clusters();
     stats.delayed_clusters = delayed_ids_.size();
     
     for (int i = 0; i < NUM_SECTORS; ++i) {

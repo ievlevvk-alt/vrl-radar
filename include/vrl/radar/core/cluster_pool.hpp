@@ -4,67 +4,65 @@
 #include "cluster.hpp"
 #include <vector>
 #include <array>
-#include <memory>
-#include <mutex>
-#include <unordered_map>
-#include <chrono>
 #include <cstdint>
+#include <iostream>
 
 namespace vrl {
 namespace radar {
 
-/**
- * @brief Пул кластеров с уникальными ID
- * 
- * Каждый кластер получает уникальный ID при создании, который сохраняется
- * на всём протяжении жизни кластера. Это позволяет безопасно ссылаться
- * на кластер без проблем с индексами.
- */
 class ClusterPool {
 public:
     static constexpr int NUM_SECTORS = 32;
     static constexpr int SECTOR_SIZE = 4096 / NUM_SECTORS;
     
     enum class ClusterState : uint8_t {
-        ACTIVE,      // Можно добавлять точки
-        WIDE,        // Широкий (но всё ещё активный!)
-        CLOSED,      // Закрыт, ждёт обработки по секторам
-        DELAYED,     // Задержан (обработан, ждёт удаления)
-        PROCESSED    // Обработан, можно удалить
+        ACTIVE,
+        WIDE,
+        CLOSED,
+        DELAYED,
+        PROCESSED
     };
     
     static ClusterPool& instance();
     
-    // --- Создание ---
-    uint64_t create_cluster();      // Возвращает уникальный ID
+    // === Инициализация ===
+    void init(size_t max_clusters = 65535);
+    bool is_initialized() const { return initialized_; }
     
-    // --- Закрытие ---
-    void close_cluster(uint64_t id, int sector);  // ACTIVE → CLOSED
-    void mark_as_wide(uint64_t id);               // ACTIVE → WIDE (остаётся в active!)
+    // === Управление отладкой ===
+    void enable_debug(bool enable) { debug_enabled_ = enable; }
+    bool is_debug_enabled() const { return debug_enabled_; }
     
-    // --- Получение для обработки ---
-    std::vector<uint64_t> take_closed_clusters(int sector);   // CLOSED → DELAYED
-    std::vector<uint64_t> take_wide_clusters();               // WIDE → PROCESSED
+    // === Создание ===
+    uint64_t create_cluster();
     
-    // --- Удаление ---
-    void remove_cluster(uint64_t id);
+    // === Закрытие ===
+    void close_cluster(uint64_t id, int sector);
     
-    // --- Очистка задержанных ---
+    // === Широкие кластеры ===
+    void add_to_wide(uint64_t id);
+    std::vector<uint64_t> take_wide_clusters();
+    
+    // === Получение для обработки ===
+    std::vector<uint64_t> take_closed_clusters(int sector);
+    
+    // === Очистка задержанных ===
     size_t cleanup_delayed_clusters(uint32_t current_revolution, double max_delay = 0.5);
     
-    // --- Получение ---
+    // === Получение ===
     Cluster* get_cluster(uint64_t id);
     const Cluster* get_cluster(uint64_t id) const;
     std::vector<Cluster*> get_all_clusters() const;
+    std::vector<Cluster*> get_active_clusters() const;      // <-- НОВЫЙ МЕТОД
     std::vector<uint64_t> get_all_ids() const;
     
-    // --- Проверка ---
+    // === Проверка ===
     bool has_closed_clusters(int sector) const;
     bool has_wide_clusters() const;
     bool has_delayed_clusters() const;
     bool exists(uint64_t id) const;
     
-    // --- Подсчёт ---
+    // === Подсчёт ===
     size_t count_active_clusters() const;
     size_t count_closed_clusters() const;
     size_t count_delayed_clusters() const;
@@ -72,10 +70,10 @@ public:
     size_t size() const;
     bool is_empty() const;
     
-    // --- Управление ---
+    // === Управление ===
     void clear();
     
-    // --- Статистика ---
+    // === Статистика ===
     struct Stats {
         size_t total_clusters{0};
         size_t active_clusters{0};
@@ -86,6 +84,20 @@ public:
     };
     
     Stats get_stats() const;
+
+    void add_to_active(uint64_t id);
+
+    void merge_clusters(uint64_t keep_id, uint64_t remove_id);    
+
+    // === Управление задержанными ===
+    void add_to_delayed(uint64_t id, int sector); 
+
+    // === Получение ===
+    std::vector<uint64_t> get_closed_clusters() const;  // <-- ДОБАВИТЬ    
+
+    // === Управление задержанными ===
+    std::vector<uint64_t> take_delayed_clusters(int sector);    
+
 
 private:
     ClusterPool() = default;
@@ -107,8 +119,9 @@ private:
     void remove_from_delayed(uint64_t id);
     bool is_valid_id(uint64_t id) const;
     
-    // Хранилище кластеров с уникальными ID
-    std::unordered_map<uint64_t, std::unique_ptr<Cluster>> clusters_;
+    // === ХРАНИЛИЩЕ ===
+    std::vector<Cluster> clusters_;
+    std::vector<Metadata> metadata_;
     
     // Списки ID
     std::vector<uint64_t> active_ids_;
@@ -116,11 +129,10 @@ private:
     std::vector<uint64_t> wide_ids_;
     std::vector<uint64_t> delayed_ids_;
     
-    // Метаданные по ID
-    std::unordered_map<uint64_t, Metadata> metadata_;
-    
-    mutable std::mutex mutex_;
-    uint64_t next_id_{1};
+    size_t max_clusters_{65535};
+    size_t next_slot_{0};
+    bool initialized_{false};
+    bool debug_enabled_{true};
 };
 
 } // namespace radar

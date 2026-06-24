@@ -9,6 +9,11 @@
 
 ctest --output-on-failure
 
+ctest --output-on-failure -R test_cluster_pool_full > test_output.log 2>&1
+
+cd /home/bill/Documents/github/vrl-radar
+tar -czf vrl-radar-src.tar.gz --exclude=build --exclude=.* include/ src/ tests/ tools/ CMakeLists.txt
+
 
 # uvd-radar
 

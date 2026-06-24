@@ -6,7 +6,7 @@ add_library(vrl_radar STATIC
     core/point_buffer.cpp
     core/cluster.cpp
     core/cluster_pool.cpp
-    core/track.cpp               # <-- НОВЫЙ ФАЙЛ
+    core/track.cpp
     core/track_pool.cpp
     processing/cluster.cpp
     processing/dbscan_clusterer.cpp
@@ -23,6 +23,14 @@ add_library(vrl_radar STATIC
     simulation/simulator.cpp
     utils/logger.cpp
     utils/utils.cpp
+    
+    # НОВЫЕ ФАЙЛЫ V2
+    v2/grid_index.cpp
+    v2/plot_pool.cpp        # <-- ДОБАВИТЬ
+    v2/track_manager.cpp
+    v2/track_pool.cpp    
+
+    
 )
 
 target_link_libraries(vrl_radar

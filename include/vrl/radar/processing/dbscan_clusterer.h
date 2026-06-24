@@ -11,6 +11,7 @@
 #include <memory>
 #include <algorithm>
 #include <cmath>
+#include <iostream>
 
 namespace vrl {
 namespace radar {
@@ -42,6 +43,8 @@ public:
     void set_debug(bool enable) { debug_ = enable; }
     int get_max_azimuth_gap() const { return max_azimuth_gap_; }
     int get_max_range_gap() const { return max_range_gap_; }
+    int get_wide_cluster_threshold() const { return wide_cluster_threshold_; }
+    void set_wide_cluster_threshold(int threshold) { wide_cluster_threshold_ = threshold; }
     
     // Публичный для тестов
     void close_expired_clusters(uint16_t current_azimuth);
@@ -56,15 +59,13 @@ private:
                         size_t buffer_index);
     void merge_overlapping_clusters();
     bool clusters_overlap(const Cluster& a, const Cluster& b) const;
-    void refresh_active_clusters() const;
     void debug_print(const std::string& msg = "");
     
     int max_azimuth_gap_{68};
     int max_range_gap_{3};
     double azimuth_gap_coefficient_{1.2};
+    int wide_cluster_threshold_{68};
     bool debug_{false};
-    
-    mutable std::vector<Cluster*> active_clusters_;
     
     size_t total_scans_processed_{0};
     size_t total_points_processed_{0};

@@ -18,7 +18,7 @@ target_compile_definitions(1_generate_replies
         $<$<BOOL:${ENABLE_VERBOSE_LOGGING}>:ENABLE_VERBOSE_LOGGING>
 )
 
-# Утилита 2-3
+# Утилита 2-3 (старая версия)
 add_executable(2_3_combined
     2_3_combined.cpp
 )
@@ -30,6 +30,25 @@ target_link_libraries(2_3_combined
 )
 
 target_compile_definitions(2_3_combined
+    PRIVATE
+        $<$<BOOL:${ENABLE_VERBOSE_LOGGING}>:ENABLE_VERBOSE_LOGGING>
+)
+
+# ========================================================================
+# НОВАЯ УТИЛИТА 2-3 V2
+# ========================================================================
+
+add_executable(2_3_combined_v2
+    2_3_combined_v2.cpp
+)
+
+target_link_libraries(2_3_combined_v2
+    vrl_radar
+    ${SDL2_LIBRARIES}
+    ${SDL2_TTF_LIBRARIES}
+)
+
+target_compile_definitions(2_3_combined_v2
     PRIVATE
         $<$<BOOL:${ENABLE_VERBOSE_LOGGING}>:ENABLE_VERBOSE_LOGGING>
 )
@@ -50,7 +69,8 @@ target_compile_definitions(4_radar_player
         $<$<BOOL:${ENABLE_VERBOSE_LOGGING}>:ENABLE_VERBOSE_LOGGING>
 )
 
-set_target_properties(1_generate_replies 2_3_combined 4_radar_player
+# Устанавливаем выходные директории
+set_target_properties(1_generate_replies 2_3_combined 2_3_combined_v2 4_radar_player
     PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tools"
 )

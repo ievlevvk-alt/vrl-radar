@@ -26,16 +26,26 @@ DBSCANClusterer::DBSCANClusterer(const RadarConfig& config,
     max_azimuth_gap_ = static_cast<int>(beamwidth_bins * azimuth_gap_coefficient_);
     if (max_azimuth_gap_ < 1) max_azimuth_gap_ = 1;
     
-    std::cout << "[DBSCANClusterer] Constructor:" << std::endl;
-    std::cout << "  beamwidth_deg = " << config_.beamwidth_deg << std::endl;
-    std::cout << "  beamwidth_bins = " << beamwidth_bins << std::endl;
-    std::cout << "  azimuth_gap_coefficient = " << azimuth_gap_coefficient_ << std::endl;
-    std::cout << "  max_azimuth_gap = " << max_azimuth_gap_ << std::endl;
-    std::cout << "  max_range_gap = " << max_range_gap_ << std::endl;
+    wide_cluster_threshold_ = max_azimuth_gap_;
+    
+    auto debug = debug_;
+    
+#ifdef CMAKE_BUILD_TYPE_DEBUG
+    if (debug) {
+        std::cout << "[DBSCANClusterer] Constructor:" << std::endl;
+        std::cout << "  beamwidth_deg = " << config_.beamwidth_deg << std::endl;
+        std::cout << "  beamwidth_bins = " << beamwidth_bins << std::endl;
+        std::cout << "  azimuth_gap_coefficient = " << azimuth_gap_coefficient_ << std::endl;
+        std::cout << "  max_azimuth_gap = " << max_azimuth_gap_ << std::endl;
+        std::cout << "  max_range_gap = " << max_range_gap_ << std::endl;
+        std::cout << "  wide_cluster_threshold = " << wide_cluster_threshold_ << std::endl;
+    }
+#endif
     
     VRL_LOG_INFO(modules::CLUSTER, "DBSCANClusterer initialized: "
                   "azimuth_gap=" + std::to_string(max_azimuth_gap_) + " MAI" +
-                  ", range_gap=" + std::to_string(max_range_gap_) + " bins");
+                  ", range_gap=" + std::to_string(max_range_gap_) + " bins" +
+                  ", wide_threshold=" + std::to_string(wide_cluster_threshold_) + " bins");
 }
 
 // ========================================================================
@@ -43,58 +53,100 @@ DBSCANClusterer::DBSCANClusterer(const RadarConfig& config,
 // ========================================================================
 
 Cluster* DBSCANClusterer::find_cluster(uint16_t azimuth, uint16_t range, bool is_rbs) {
-    refresh_active_clusters();
+    auto debug = debug_;
     
-    std::cout << "[find_cluster] Looking for cluster: az=" << azimuth 
-              << ", range=" << range << ", is_rbs=" << is_rbs << std::endl;
-    std::cout << "[find_cluster] active_clusters_.size()=" << active_clusters_.size() << std::endl;
+    // ИСПРАВЛЕНО: используем только активные кластеры
+    auto active_clusters = ClusterPool::instance().get_active_clusters();
     
-    for (Cluster* cluster : active_clusters_) {
-        std::cout << "[find_cluster] Checking cluster: last_az=" << cluster->get_last_azimuth()
-                  << ", min_range=" << cluster->get_min_range()
-                  << ", max_range=" << cluster->get_max_range()
-                  << ", has_rbs=" << cluster->has_rbs()
-                  << ", has_uvd=" << cluster->has_uvd()
-                  << ", is_closed=" << cluster->is_closed() << std::endl;
+#ifdef CMAKE_BUILD_TYPE_DEBUG
+    if (debug) {
+        std::cout << "[find_cluster] Looking for cluster: az=" << azimuth 
+                  << ", range=" << range << ", is_rbs=" << is_rbs << std::endl;
+        std::cout << "[find_cluster] active clusters=" << active_clusters.size() << std::endl;
+    }
+#endif
+    
+    for (Cluster* cluster : active_clusters) {
+        if (!cluster || cluster->is_closed()) continue;
+        
+#ifdef CMAKE_BUILD_TYPE_DEBUG
+        if (debug) {
+            std::cout << "[find_cluster] Checking cluster id=" << cluster->get_id()
+                      << ": last_az=" << cluster->get_last_azimuth()
+                      << ", min_range=" << cluster->get_min_range()
+                      << ", max_range=" << cluster->get_max_range()
+                      << ", has_rbs=" << cluster->has_rbs()
+                      << ", has_uvd=" << cluster->has_uvd()
+                      << ", is_closed=" << cluster->is_closed() << std::endl;
+        }
+#endif
         
         if (is_rbs && !cluster->has_rbs()) {
-            std::cout << "[find_cluster]  SKIP: cluster has no RBS" << std::endl;
+#ifdef CMAKE_BUILD_TYPE_DEBUG
+            if (debug) {
+                std::cout << "[find_cluster]  SKIP: cluster has no RBS" << std::endl;
+            }
+#endif
             continue;
         }
         if (!is_rbs && !cluster->has_uvd()) {
-            std::cout << "[find_cluster]  SKIP: cluster has no UVD" << std::endl;
-            continue;
-        }
-        if (cluster->is_closed()) {
-            std::cout << "[find_cluster]  SKIP: cluster is closed" << std::endl;
+#ifdef CMAKE_BUILD_TYPE_DEBUG
+            if (debug) {
+                std::cout << "[find_cluster]  SKIP: cluster has no UVD" << std::endl;
+            }
+#endif
             continue;
         }
         
         int16_t az_gap = azimuth - cluster->get_last_azimuth();
         if (az_gap < 0) az_gap += AZIMUTH_BINS;
         
-        std::cout << "[find_cluster]  az_gap = " << az_gap 
-                  << ", max_azimuth_gap = " << max_azimuth_gap_ << std::endl;
+#ifdef CMAKE_BUILD_TYPE_DEBUG
+        if (debug) {
+            std::cout << "[find_cluster]  az_gap = " << az_gap 
+                      << ", max_azimuth_gap = " << max_azimuth_gap_ << std::endl;
+        }
+#endif
         
         if (az_gap > max_azimuth_gap_) {
-            std::cout << "[find_cluster]  SKIP: az_gap > max_azimuth_gap" << std::endl;
+#ifdef CMAKE_BUILD_TYPE_DEBUG
+            if (debug) {
+                std::cout << "[find_cluster]  SKIP: az_gap > max_azimuth_gap" << std::endl;
+            }
+#endif
             continue;
         }
         
         if (range < cluster->get_min_range() - max_range_gap_) {
-            std::cout << "[find_cluster]  SKIP: range too low" << std::endl;
+#ifdef CMAKE_BUILD_TYPE_DEBUG
+            if (debug) {
+                std::cout << "[find_cluster]  SKIP: range too low" << std::endl;
+            }
+#endif
             continue;
         }
         if (range > cluster->get_max_range() + max_range_gap_) {
-            std::cout << "[find_cluster]  SKIP: range too high" << std::endl;
+#ifdef CMAKE_BUILD_TYPE_DEBUG
+            if (debug) {
+                std::cout << "[find_cluster]  SKIP: range too high" << std::endl;
+            }
+#endif
             continue;
         }
         
-        std::cout << "[find_cluster]  FOUND matching cluster!" << std::endl;
+#ifdef CMAKE_BUILD_TYPE_DEBUG
+        if (debug) {
+            std::cout << "[find_cluster]  FOUND matching cluster id=" << cluster->get_id() << std::endl;
+        }
+#endif
         return cluster;
     }
     
-    std::cout << "[find_cluster] No matching cluster found" << std::endl;
+#ifdef CMAKE_BUILD_TYPE_DEBUG
+    if (debug) {
+        std::cout << "[find_cluster] No matching cluster found" << std::endl;
+    }
+#endif
     return nullptr;
 }
 
@@ -104,16 +156,35 @@ Cluster* DBSCANClusterer::find_cluster(uint16_t azimuth, uint16_t range, bool is
 
 void DBSCANClusterer::create_cluster(uint16_t azimuth, uint16_t range, bool is_rbs,
                                      size_t buffer_index) {
-    std::cout << "[create_cluster] Creating new cluster: az=" << azimuth 
-              << ", range=" << range << ", is_rbs=" << is_rbs << std::endl;
+    auto debug = debug_;
+    
+#ifdef CMAKE_BUILD_TYPE_DEBUG
+    if (debug) {
+        std::cout << "[create_cluster] Creating new cluster: az=" << azimuth 
+                  << ", range=" << range << ", is_rbs=" << is_rbs << std::endl;
+    }
+#endif
     
     uint64_t id = ClusterPool::instance().create_cluster();
     Cluster* cluster = ClusterPool::instance().get_cluster(id);
-    cluster->add_point(buffer_index);
-    total_clusters_formed_++;
-    
-    std::cout << "[create_cluster] New cluster id=" << id
-              << ", total_clusters_formed=" << total_clusters_formed_ << std::endl;
+    if (cluster) {
+        cluster->add_point(buffer_index);
+        total_clusters_formed_++;
+        
+#ifdef CMAKE_BUILD_TYPE_DEBUG
+        if (debug) {
+            std::cout << "[create_cluster] New cluster id=" << id
+                      << ", total_clusters_formed=" << total_clusters_formed_ << std::endl;
+        }
+#endif
+    } else {
+#ifdef CMAKE_BUILD_TYPE_DEBUG
+        if (debug) {
+            std::cout << "[create_cluster] ERROR: failed to create cluster" << std::endl;
+        }
+#endif
+        VRL_LOG_ERROR(modules::CLUSTER, "Failed to create cluster");
+    }
 }
 
 // ========================================================================
@@ -122,18 +193,56 @@ void DBSCANClusterer::create_cluster(uint16_t azimuth, uint16_t range, bool is_r
 
 void DBSCANClusterer::process_point(uint16_t azimuth, uint16_t range, bool is_rbs,
                                     const StoredPoint& point, size_t buffer_index) {
-    std::cout << "[process_point] Processing: az=" << azimuth 
-              << ", range=" << range << ", is_rbs=" << is_rbs << std::endl;
+    auto debug = debug_;
+    
+#ifdef CMAKE_BUILD_TYPE_DEBUG
+    if (debug) {
+        std::cout << "[process_point] Processing: az=" << azimuth 
+                  << ", range=" << range << ", is_rbs=" << is_rbs << std::endl;
+    }
+#endif
     
     close_expired_clusters(azimuth);
     
     Cluster* target = find_cluster(azimuth, range, is_rbs);
     
     if (target) {
-        std::cout << "[process_point] Adding point to existing cluster" << std::endl;
+#ifdef CMAKE_BUILD_TYPE_DEBUG
+        if (debug) {
+            std::cout << "[process_point] Adding point to existing cluster id=" 
+                      << target->get_id() << std::endl;
+        }
+#endif
         target->add_point(buffer_index);
+        
+        // Проверяем на широкость
+        int azimuth_span = target->get_azimuth_span();
+        
+#ifdef CMAKE_BUILD_TYPE_DEBUG
+        if (debug) {
+            std::cout << "[process_point] azimuth_span=" << azimuth_span 
+                      << ", wide_threshold=" << wide_cluster_threshold_ << std::endl;
+        }
+#endif
+        
+        if (azimuth_span > wide_cluster_threshold_) {
+            uint64_t id = target->get_id();
+            if (id > 0) {
+#ifdef CMAKE_BUILD_TYPE_DEBUG
+                if (debug) {
+                    std::cout << "[process_point] Cluster id=" << id 
+                              << " became WIDE (span=" << azimuth_span << ")" << std::endl;
+                }
+#endif
+                ClusterPool::instance().add_to_wide(id);
+            }
+        }
     } else {
-        std::cout << "[process_point] Creating new cluster" << std::endl;
+#ifdef CMAKE_BUILD_TYPE_DEBUG
+        if (debug) {
+            std::cout << "[process_point] Creating new cluster" << std::endl;
+        }
+#endif
         create_cluster(azimuth, range, is_rbs, buffer_index);
     }
     
@@ -145,51 +254,65 @@ void DBSCANClusterer::process_point(uint16_t azimuth, uint16_t range, bool is_rb
 // ========================================================================
 
 void DBSCANClusterer::close_expired_clusters(uint16_t current_azimuth) {
-    refresh_active_clusters();
+    auto debug = debug_;
     
-    std::cout << "[close_expired_clusters] current_azimuth=" << current_azimuth
-              << ", active_clusters_.size()=" << active_clusters_.size() << std::endl;
+    // ИСПРАВЛЕНО: используем только активные кластеры
+    auto active_clusters = ClusterPool::instance().get_active_clusters();
+    
+#ifdef CMAKE_BUILD_TYPE_DEBUG
+    if (debug) {
+        std::cout << "[close_expired_clusters] current_azimuth=" << current_azimuth
+                  << ", active clusters=" << active_clusters.size() << std::endl;
+    }
+#endif
     
     int closed_count = 0;
     
-    for (Cluster* cluster : active_clusters_) {
+    for (Cluster* cluster : active_clusters) {
+        if (!cluster) continue;
         if (cluster->is_closed()) {
-            std::cout << "[close_expired_clusters]  cluster already closed" << std::endl;
+#ifdef CMAKE_BUILD_TYPE_DEBUG
+            if (debug) {
+                std::cout << "[close_expired_clusters]  cluster id=" << cluster->get_id() 
+                          << " already closed" << std::endl;
+            }
+#endif
             continue;
         }
         if (cluster->is_empty()) {
-            std::cout << "[close_expired_clusters]  cluster empty" << std::endl;
+#ifdef CMAKE_BUILD_TYPE_DEBUG
+            if (debug) {
+                std::cout << "[close_expired_clusters]  cluster id=" << cluster->get_id() 
+                          << " empty" << std::endl;
+            }
+#endif
             continue;
         }
         
         int16_t az_gap = current_azimuth - cluster->get_last_azimuth();
         if (az_gap < 0) az_gap += AZIMUTH_BINS;
         
-        std::cout << "[close_expired_clusters]  cluster: last_az=" << cluster->get_last_azimuth()
-                  << ", az_gap=" << az_gap << ", max_azimuth_gap=" << max_azimuth_gap_ << std::endl;
+#ifdef CMAKE_BUILD_TYPE_DEBUG
+        if (debug) {
+            std::cout << "[close_expired_clusters]  cluster id=" << cluster->get_id()
+                      << ": last_az=" << cluster->get_last_azimuth()
+                      << ", az_gap=" << az_gap << ", max_azimuth_gap=" << max_azimuth_gap_ << std::endl;
+        }
+#endif
         
         if (az_gap > max_azimuth_gap_) {
             cluster->close();
+            uint64_t id = cluster->get_id();
             
-            // Ищем ID кластера по указателю
-            uint64_t id = 0;
-            bool found = false;
-            auto ids = ClusterPool::instance().get_all_ids();
-            for (uint64_t cid : ids) {
-                if (ClusterPool::instance().get_cluster(cid) == cluster) {
-                    id = cid;
-                    found = true;
-                    break;
-                }
+#ifdef CMAKE_BUILD_TYPE_DEBUG
+            if (debug) {
+                std::cout << "[close_expired_clusters]  CLOSING cluster id=" << id << std::endl;
             }
+#endif
             
-            if (found) {
+            if (id > 0) {
                 int sector = cluster->get_last_azimuth() / ClusterPool::SECTOR_SIZE;
                 if (sector >= ClusterPool::NUM_SECTORS) sector = ClusterPool::NUM_SECTORS - 1;
-                
-                std::cout << "[close_expired_clusters]  CLOSING cluster id=" << id
-                          << ", sector=" << sector << std::endl;
-                
                 ClusterPool::instance().close_cluster(id, sector);
             }
             
@@ -198,33 +321,11 @@ void DBSCANClusterer::close_expired_clusters(uint16_t current_azimuth) {
         }
     }
     
-    std::cout << "[close_expired_clusters] closed " << closed_count << " clusters" << std::endl;
-}
-
-// ========================================================================
-// ОБНОВЛЕНИЕ СПИСКА АКТИВНЫХ КЛАСТЕРОВ
-// ========================================================================
-
-void DBSCANClusterer::refresh_active_clusters() const {
-    active_clusters_.clear();
-    
-    auto clusters = ClusterPool::instance().get_all_clusters();
-    
-    std::cout << "[refresh_active_clusters] total clusters=" << clusters.size() << std::endl;
-    
-    for (Cluster* cluster : clusters) {
-        if (cluster && !cluster->is_closed()) {
-            active_clusters_.push_back(cluster);
-            std::cout << "[refresh_active_clusters]  added cluster: size=" 
-                      << cluster->size() << ", last_az=" 
-                      << cluster->get_last_azimuth() << std::endl;
-        } else if (cluster && cluster->is_closed()) {
-            std::cout << "[refresh_active_clusters]  skipping closed cluster" << std::endl;
-        }
+#ifdef CMAKE_BUILD_TYPE_DEBUG
+    if (debug && closed_count > 0) {
+        std::cout << "[close_expired_clusters] closed " << closed_count << " clusters" << std::endl;
     }
-    
-    std::cout << "[refresh_active_clusters] active_clusters_.size()=" 
-              << active_clusters_.size() << std::endl;
+#endif
 }
 
 // ========================================================================
@@ -232,13 +333,12 @@ void DBSCANClusterer::refresh_active_clusters() const {
 // ========================================================================
 
 void DBSCANClusterer::get_stats(size_t& active, size_t& completed) const {
-    refresh_active_clusters();
-    active = active_clusters_.size();
+    active = ClusterPool::instance().count_active_clusters();
     completed = ClusterPool::instance().count_closed_clusters();
 }
 
 // ========================================================================
-// ОСТАЛЬНЫЕ МЕТОДЫ
+// MERGE ОВЕРЛАППИНГ КЛАСТЕРОВ
 // ========================================================================
 
 bool DBSCANClusterer::clusters_overlap(const Cluster& a, const Cluster& b) const {
@@ -256,69 +356,88 @@ bool DBSCANClusterer::clusters_overlap(const Cluster& a, const Cluster& b) const
 }
 
 void DBSCANClusterer::merge_overlapping_clusters() {
-    refresh_active_clusters();
+    auto debug = debug_;
     
     bool merged = true;
     int merge_count = 0;
+    int max_iterations = 100;  // Защита от бесконечного цикла
+    int iteration = 0;
     
-    while (merged) {
+    while (merged && iteration < max_iterations) {
         merged = false;
+        iteration++;
         
-        for (size_t i = 0; i < active_clusters_.size(); ++i) {
-            for (size_t j = i + 1; j < active_clusters_.size(); ++j) {
-                Cluster* a = active_clusters_[i];
-                Cluster* b = active_clusters_[j];
+        // ИСПРАВЛЕНО: используем только активные кластеры
+        auto active = ClusterPool::instance().get_active_clusters();
+        
+#ifdef CMAKE_BUILD_TYPE_DEBUG
+        if (debug) {
+            std::cout << "[merge_overlapping_clusters] iteration=" << iteration 
+                      << ", active_count=" << active.size() << std::endl;
+        }
+#endif
+        
+        for (size_t i = 0; i < active.size(); ++i) {
+            for (size_t j = i + 1; j < active.size(); ++j) {
+                Cluster* a = active[i];
+                Cluster* b = active[j];
                 
                 if (!a || !b) continue;
                 if (a->is_closed() || b->is_closed()) continue;
-                
+
                 if (clusters_overlap(*a, *b)) {
-                    std::cout << "[merge_overlapping_clusters] Merging clusters " << i << " and " << j << std::endl;
-                    
-                    for (size_t idx : b->get_indices()) {
-                        a->add_point(idx);
+#ifdef CMAKE_BUILD_TYPE_DEBUG
+                    if (debug) {
+                        std::cout << "[merge_overlapping_clusters] Merging clusters " 
+                                << a->get_id() << " and " << b->get_id() << std::endl;
                     }
+#endif
                     
-                    // Находим ID b
-                    uint64_t b_id = 0;
-                    bool found = false;
-                    auto ids = ClusterPool::instance().get_all_ids();
-                    for (uint64_t cid : ids) {
-                        if (ClusterPool::instance().get_cluster(cid) == b) {
-                            b_id = cid;
-                            found = true;
-                            break;
-                        }
-                    }
+                    // Используем готовую функцию из ClusterPool
+                    ClusterPool::instance().merge_clusters(a->get_id(), b->get_id());
+                    total_clusters_completed_++;
                     
-                    if (found) {
-                        ClusterPool::instance().remove_cluster(b_id);
-                        total_clusters_completed_++;
-                    }
-                    
-                    refresh_active_clusters();
                     merged = true;
                     merge_count++;
                     break;
-                }
+                }                
             }
-            if (merged) break;
+            if (merged) break;  // Выходим из внешнего цикла
         }
     }
     
-    if (merge_count > 0) {
-        std::cout << "[merge_overlapping_clusters] Merged " << merge_count << " pairs" << std::endl;
+#ifdef CMAKE_BUILD_TYPE_DEBUG
+    if (debug) {
+        if (iteration >= max_iterations) {
+            std::cout << "[merge_overlapping_clusters] WARNING: reached max iterations=" 
+                      << max_iterations << std::endl;
+        }
+        if (merge_count > 0) {
+            std::cout << "[merge_overlapping_clusters] Merged " << merge_count 
+                      << " pairs in " << iteration << " iterations" << std::endl;
+        }
     }
+#endif
 }
+
+// ========================================================================
+// ОСТАЛЬНЫЕ МЕТОДЫ
+// ========================================================================
 
 void DBSCANClusterer::process_scan(const ScanReplies& scan) {
     total_scans_processed_++;
     current_revolution_++;
     current_azimuth_ = scan.azimuth;
     
-    std::cout << "\n[process_scan] Processing scan: az=" << scan.azimuth 
-              << ", rbs=" << scan.rbs_replies.size()
-              << ", uvd=" << scan.uvd_replies.size() << std::endl;
+    auto debug = debug_;
+    
+#ifdef CMAKE_BUILD_TYPE_DEBUG
+    if (debug) {
+        std::cout << "\n[process_scan] Processing scan: az=" << scan.azimuth 
+                  << ", rbs=" << scan.rbs_replies.size()
+                  << ", uvd=" << scan.uvd_replies.size() << std::endl;
+    }
+#endif
     
     for (const auto& reply : scan.rbs_replies) {
         StoredPoint point;
@@ -351,7 +470,11 @@ void DBSCANClusterer::process_scan(const ScanReplies& scan) {
         process_point(reply.azimuth, reply.range, false, point, buffer_idx);
     }
     
-    std::cout << "[process_scan] Done. active_clusters=" << count_active_clusters() << std::endl;
+#ifdef CMAKE_BUILD_TYPE_DEBUG
+    if (debug) {
+        std::cout << "[process_scan] Done. active_clusters=" << count_active_clusters() << std::endl;
+    }
+#endif
 }
 
 std::vector<TargetCluster> DBSCANClusterer::get_completed_clusters() {
@@ -364,9 +487,15 @@ const std::vector<TargetCluster>& DBSCANClusterer::get_active_clusters() const {
 }
 
 void DBSCANClusterer::reset() {
-    std::cout << "[reset] Resetting DBSCANClusterer" << std::endl;
+    auto debug = debug_;
+    
+#ifdef CMAKE_BUILD_TYPE_DEBUG
+    if (debug) {
+        std::cout << "[reset] Resetting DBSCANClusterer" << std::endl;
+    }
+#endif
+    
     ClusterPool::instance().clear();
-    active_clusters_.clear();
     total_scans_processed_ = 0;
     total_points_processed_ = 0;
     total_clusters_formed_ = 0;
@@ -376,30 +505,27 @@ void DBSCANClusterer::reset() {
 }
 
 std::vector<TargetCluster> DBSCANClusterer::finish_all() {
-    refresh_active_clusters();
+    auto debug = debug_;
     
-    for (Cluster* cluster : active_clusters_) {
+    // ИСПРАВЛЕНО: используем только активные кластеры
+    auto active_clusters = ClusterPool::instance().get_active_clusters();
+    
+#ifdef CMAKE_BUILD_TYPE_DEBUG
+    if (debug) {
+        std::cout << "[finish_all] Closing " << active_clusters.size() << " clusters" << std::endl;
+    }
+#endif
+    
+    for (Cluster* cluster : active_clusters) {
+        if (!cluster) continue;
         if (!cluster->is_closed()) {
             cluster->close();
-            
-            // Ищем ID кластера
-            uint64_t id = 0;
-            bool found = false;
-            auto ids = ClusterPool::instance().get_all_ids();
-            for (uint64_t cid : ids) {
-                if (ClusterPool::instance().get_cluster(cid) == cluster) {
-                    id = cid;
-                    found = true;
-                    break;
-                }
-            }
-            
-            if (found) {
+            uint64_t id = cluster->get_id();
+            if (id > 0) {
                 int sector = cluster->get_last_azimuth() / ClusterPool::SECTOR_SIZE;
                 if (sector >= ClusterPool::NUM_SECTORS) sector = ClusterPool::NUM_SECTORS - 1;
                 ClusterPool::instance().close_cluster(id, sector);
             }
-            
             total_clusters_completed_++;
         }
     }
@@ -411,38 +537,91 @@ std::unique_ptr<IClusterer> DBSCANClusterer::clone() const {
     auto clone = std::make_unique<DBSCANClusterer>(
         config_, max_range_gap_, azimuth_gap_coefficient_);
     clone->max_azimuth_gap_ = max_azimuth_gap_;
+    clone->wide_cluster_threshold_ = wide_cluster_threshold_;
     clone->set_debug(debug_);
     return clone;
 }
 
 void DBSCANClusterer::set_param(const std::string& key, double value) {
+    auto debug = debug_;
+    
+#ifdef CMAKE_BUILD_TYPE_DEBUG
+    if (debug) {
+        std::cout << "[set_param] key=" << key << ", value=" << value << std::endl;
+    }
+#endif
+    
     if (key == "azimuth_gap_coefficient") {
         azimuth_gap_coefficient_ = value;
         double beamwidth_bins = config_.beamwidth_deg * AZIMUTH_BINS / 360.0;
         max_azimuth_gap_ = static_cast<int>(beamwidth_bins * value);
         if (max_azimuth_gap_ < 1) max_azimuth_gap_ = 1;
-        std::cout << "[set_param] azimuth_gap_coefficient=" << value 
-                  << " -> max_azimuth_gap=" << max_azimuth_gap_ << std::endl;
+#ifdef CMAKE_BUILD_TYPE_DEBUG
+        if (debug) {
+            std::cout << "[set_param] azimuth_gap_coefficient=" << value 
+                      << " -> max_azimuth_gap=" << max_azimuth_gap_ << std::endl;
+        }
+#endif
     } else if (key == "max_range_gap") {
         max_range_gap_ = static_cast<int>(value);
-        std::cout << "[set_param] max_range_gap=" << max_range_gap_ << std::endl;
+#ifdef CMAKE_BUILD_TYPE_DEBUG
+        if (debug) {
+            std::cout << "[set_param] max_range_gap=" << max_range_gap_ << std::endl;
+        }
+#endif
+    } else if (key == "wide_cluster_threshold") {
+        wide_cluster_threshold_ = static_cast<int>(value);
+        if (wide_cluster_threshold_ < 1) wide_cluster_threshold_ = 1;
+#ifdef CMAKE_BUILD_TYPE_DEBUG
+        if (debug) {
+            std::cout << "[set_param] wide_cluster_threshold=" << wide_cluster_threshold_ << std::endl;
+        }
+#endif
+    } else {
+        VRL_LOG_WARN(modules::CLUSTER, "Unknown double parameter: " + key);
     }
 }
 
 void DBSCANClusterer::set_param(const std::string& key, int value) {
+    auto debug = debug_;
+    
+#ifdef CMAKE_BUILD_TYPE_DEBUG
+    if (debug) {
+        std::cout << "[set_param] key=" << key << ", value=" << value << std::endl;
+    }
+#endif
+    
     if (key == "max_azimuth_gap") {
         max_azimuth_gap_ = value;
         if (max_azimuth_gap_ < 1) max_azimuth_gap_ = 1;
-        std::cout << "[set_param] max_azimuth_gap=" << value << std::endl;
+#ifdef CMAKE_BUILD_TYPE_DEBUG
+        if (debug) {
+            std::cout << "[set_param] max_azimuth_gap=" << value << std::endl;
+        }
+#endif
     } else if (key == "max_range_gap") {
         max_range_gap_ = value;
-        std::cout << "[set_param] max_range_gap=" << value << std::endl;
+#ifdef CMAKE_BUILD_TYPE_DEBUG
+        if (debug) {
+            std::cout << "[set_param] max_range_gap=" << value << std::endl;
+        }
+#endif
+    } else if (key == "wide_cluster_threshold") {
+        wide_cluster_threshold_ = value;
+        if (wide_cluster_threshold_ < 1) wide_cluster_threshold_ = 1;
+#ifdef CMAKE_BUILD_TYPE_DEBUG
+        if (debug) {
+            std::cout << "[set_param] wide_cluster_threshold=" << value << std::endl;
+        }
+#endif
+    } else {
+        VRL_LOG_WARN(modules::CLUSTER, "Unknown int parameter: " + key);
     }
 }
 
 size_t DBSCANClusterer::count_active_clusters() const {
-    refresh_active_clusters();
-    return active_clusters_.size();
+    // ИСПРАВЛЕНО: используем готовый метод ClusterPool
+    return ClusterPool::instance().count_active_clusters();
 }
 
 } // namespace radar

@@ -9,7 +9,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Опции сборки
 option(BUILD_TOOLS "Build tools" ON)
-option(BUILD_TESTS "Build tests" OFF)
+option(BUILD_TESTS "Build tests" ON)
 option(BUILD_EXAMPLES "Build examples" OFF)
 option(ENABLE_VERBOSE_LOGGING "Enable verbose debug logging" OFF)
 option(ENABLE_TRACE_LOGGING "Enable TRACE level logging (very verbose)" OFF)

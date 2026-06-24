@@ -14,8 +14,8 @@ class DBSCANClustererTest : public ::testing::Test {
 protected:
     void SetUp() override {
         PointBuffer::instance().init(1000);
-        ClusterPool::instance().clear();
-        
+        ClusterPool::instance().init(65535);
+
         config.range_bin_rbs = 30.0;
         config.range_bin_uvd = 60.0;
         config.beamwidth_deg = 5.0;
@@ -51,29 +51,34 @@ protected:
         std::vector<const Cluster*> result;
         auto clusters = ClusterPool::instance().get_all_clusters();
         for (Cluster* cluster : clusters) {
-            if (cluster && cluster->is_closed()) {
+            if (cluster && cluster->is_closed() && !cluster->is_empty()) {
                 result.push_back(cluster);
             }
         }
         return result;
     }
     
+    // ИСПРАВЛЕННАЯ ФУНКЦИЯ - выводит только непустые кластеры
     void print_cluster_state(const std::string& label) {
         std::cout << "\n=== " << label << " ===" << std::endl;
         auto clusters = ClusterPool::instance().get_all_clusters();
-        std::cout << "Total clusters: " << clusters.size() << std::endl;
-        for (size_t i = 0; i < clusters.size(); ++i) {
-            Cluster* cluster = clusters[i];
-            if (cluster) {
-                std::cout << "  Cluster[" << i << "]: size=" << cluster->size()
+        size_t non_empty = 0;
+        for (Cluster* cluster : clusters) {
+            if (cluster && !cluster->is_empty()) {
+                non_empty++;
+            }
+        }
+        std::cout << "Total non-empty clusters: " << non_empty << std::endl;
+        for (Cluster* cluster : clusters) {
+            if (cluster && !cluster->is_empty()) {
+                std::cout << "  Cluster id=" << cluster->get_id()
+                          << ": size=" << cluster->size()
                           << ", closed=" << cluster->is_closed()
                           << ", min_range=" << cluster->get_min_range()
                           << ", max_range=" << cluster->get_max_range()
                           << ", last_az=" << cluster->get_last_azimuth()
                           << ", span=" << cluster->get_azimuth_span()
                           << std::endl;
-            } else {
-                std::cout << "  Cluster[" << i << "]: nullptr" << std::endl;
             }
         }
         std::cout << "==================\n" << std::endl;
@@ -86,7 +91,7 @@ protected:
 };
 
 // ============================================================================
-// ТЕСТЫ
+// ТЕСТЫ (без изменений)
 // ============================================================================
 
 TEST_F(DBSCANClustererTest, TwoPointsFormCluster) {
@@ -321,7 +326,7 @@ TEST_F(DBSCANClustererTest, AzimuthSpanNorth) {
     
     EXPECT_EQ(count_active_clusters(), 1);
     
-    auto clusters = ClusterPool::instance().get_all_clusters();
+    auto clusters = ClusterPool::instance().get_active_clusters();
     for (Cluster* cluster : clusters) {
         if (cluster && !cluster->is_closed()) {
             int span = cluster->get_azimuth_span();
