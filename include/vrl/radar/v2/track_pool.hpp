@@ -4,6 +4,8 @@
 #include <vector>
 #include <cstdint>
 #include <cstddef>
+#include <memory>
+#include "kalman_filter.hpp"
 
 namespace vrl {
 namespace radar {
@@ -12,39 +14,100 @@ namespace v2 {
 struct Track {
     uint64_t id{0};
     
-    // Позиция и движение
     double x{0.0}, y{0.0};
     double vx{0.0}, vy{0.0};
     uint16_t azimuth_maia{0};
     uint16_t range_bins{0};
     
-    // Коды и данные
     uint16_t mode3a_code{0};
     uint32_t uvd_data20{0};
     uint16_t altitude{0};
     bool spi{false};
     
-    // Состояние
-    uint8_t state{0};           // 0=NEW, 1=ACTIVE, 2=COASTING, 3=DROPPED
+    uint8_t state{0};
     uint32_t hit_count{0};
     uint32_t coast_count{0};
     
-    // Время последнего обновления
     uint64_t last_update_time{0};
     
-    // Статус и уверенность
     uint32_t status{0};
     bool code_confidence{false};
     bool altitude_confidence{false};
     
-    // === НОВОЕ: флаг обновления в текущем обороте ===
     bool updated_in_current_sector{false};
     
-    // === НОВОЕ: индекс плота ===
     uint64_t plot_index{0};
     
-    // Связи с кластерами
     std::vector<uint64_t> candidate_cluster_ids;
+    
+    std::unique_ptr<KalmanFilter> filter;
+    
+    Track() = default;
+    
+    // Конструктор копирования
+    Track(const Track& other)
+        : id(other.id)
+        , x(other.x), y(other.y)
+        , vx(other.vx), vy(other.vy)
+        , azimuth_maia(other.azimuth_maia)
+        , range_bins(other.range_bins)
+        , mode3a_code(other.mode3a_code)
+        , uvd_data20(other.uvd_data20)
+        , altitude(other.altitude)
+        , spi(other.spi)
+        , state(other.state)
+        , hit_count(other.hit_count)
+        , coast_count(other.coast_count)
+        , last_update_time(other.last_update_time)
+        , status(other.status)
+        , code_confidence(other.code_confidence)
+        , altitude_confidence(other.altitude_confidence)
+        , updated_in_current_sector(other.updated_in_current_sector)
+        , plot_index(other.plot_index)
+        , candidate_cluster_ids(other.candidate_cluster_ids)
+    {
+        if (other.filter && other.filter->is_initialized()) {
+            filter = other.filter->clone();
+        }
+    }
+    
+    // Оператор присваивания
+    Track& operator=(const Track& other) {
+        if (this != &other) {
+            id = other.id;
+            x = other.x; y = other.y;
+            vx = other.vx; vy = other.vy;
+            azimuth_maia = other.azimuth_maia;
+            range_bins = other.range_bins;
+            mode3a_code = other.mode3a_code;
+            uvd_data20 = other.uvd_data20;
+            altitude = other.altitude;
+            spi = other.spi;
+            state = other.state;
+            hit_count = other.hit_count;
+            coast_count = other.coast_count;
+            last_update_time = other.last_update_time;
+            status = other.status;
+            code_confidence = other.code_confidence;
+            altitude_confidence = other.altitude_confidence;
+            updated_in_current_sector = other.updated_in_current_sector;
+            plot_index = other.plot_index;
+            candidate_cluster_ids = other.candidate_cluster_ids;
+            
+            if (other.filter && other.filter->is_initialized()) {
+                filter = other.filter->clone();
+            } else {
+                filter.reset();
+            }
+        }
+        return *this;
+    }
+    
+    // Конструктор перемещения
+    Track(Track&& other) noexcept = default;
+    
+    // Оператор присваивания перемещением
+    Track& operator=(Track&& other) noexcept = default;
     
     void reset() {
         x = 0.0; y = 0.0;
@@ -65,6 +128,9 @@ struct Track {
         updated_in_current_sector = false;
         plot_index = 0;
         candidate_cluster_ids.clear();
+        if (filter) {
+            filter->reset();
+        }
     }
 };
 

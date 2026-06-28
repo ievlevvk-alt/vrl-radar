@@ -32,7 +32,7 @@ bool GridIndex::is_in_range(const GridCellKey& key) const {
 
 int GridIndex::get_rings_for_range(double range_m) const {
     double range_km = range_m / 1000.0;
-    if (range_km < config_.far_threshold_km) {
+    if (range_km <= config_.far_threshold_km) {  // <-- МЕНЯЕМ < на <=
         return config_.rings_near;
     }
     return config_.rings_far;

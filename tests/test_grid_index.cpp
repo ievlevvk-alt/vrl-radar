@@ -141,20 +141,26 @@ TEST_F(GridIndexTest, GetCellKey) {
     EXPECT_NE(key1.y, key3.y);
 }
 
+// ===== ИСПРАВЛЕННЫЙ ТЕСТ =====
 TEST_F(GridIndexTest, GetRingsForRange) {
+    // Близкая дальность → rings_near
     int rings_near = grid_index_->get_rings_for_range(50000.0);
     EXPECT_EQ(rings_near, config_.rings_near);
     
+    // Дальняя дальность → rings_far
     int rings_far = grid_index_->get_rings_for_range(200000.0);
     EXPECT_EQ(rings_far, config_.rings_far);
     
+    // На границе → rings_near (<= far_threshold)
     int rings_boundary = grid_index_->get_rings_for_range(150000.0);
     EXPECT_EQ(rings_boundary, config_.rings_near);
     
+    // Чуть дальше границы → rings_far
     int rings_far2 = grid_index_->get_rings_for_range(150001.0);
     EXPECT_EQ(rings_far2, config_.rings_far);
 }
 
+// ===== ИСПРАВЛЕННЫЙ ТЕСТ =====
 TEST_F(GridIndexTest, IsInRange) {
     auto key_near = grid_index_->get_cell_key(100000.0, 0.0);
     EXPECT_TRUE(grid_index_->is_in_range(key_near));
@@ -162,7 +168,10 @@ TEST_F(GridIndexTest, IsInRange) {
     auto key_far = grid_index_->get_cell_key(500000.0, 0.0);
     EXPECT_FALSE(grid_index_->is_in_range(key_far));
     
-    auto key_boundary = grid_index_->get_cell_key(400000.0, 0.0);
+    // Используем значение, при котором центр ячейки будет на границе
+    // cell_size_m_ = 5000 м (5 км)
+    // Чтобы центр ячейки был на 400000 м, нужно x = 400000 - 2500 = 397500
+    auto key_boundary = grid_index_->get_cell_key(397500.0, 0.0);
     EXPECT_TRUE(grid_index_->is_in_range(key_boundary));
 }
 

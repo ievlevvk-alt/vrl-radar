@@ -29,6 +29,7 @@ add_library(vrl_radar STATIC
     v2/plot_pool.cpp        # <-- ДОБАВИТЬ
     v2/track_manager.cpp
     v2/track_pool.cpp    
+    v2/kalman_filter.cpp    
 
     
 )

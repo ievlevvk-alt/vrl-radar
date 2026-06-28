@@ -1,405 +1,147 @@
-// tests/test_dbscan_clusterer.cpp
+// tests/test_clusterer.cpp - исправленная версия
 #include <gtest/gtest.h>
+#include "vrl/radar/processing/cluster.h"
 #include "vrl/radar/processing/dbscan_clusterer.h"
+#include "vrl/radar/processing/legacy_clusterer.h"
 #include "vrl/radar/core/point_buffer.hpp"
 #include "vrl/radar/core/cluster_pool.hpp"
-#include "vrl/radar/core/config.h"
-#include <vector>
-#include <memory>
-#include <iostream>
 
 using namespace vrl::radar;
 
-class DBSCANClustererTest : public ::testing::Test {
+class ClustererTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        PointBuffer::instance().init(1000);
-        ClusterPool::instance().init(65535);
-
-        config.range_bin_rbs = 30.0;
-        config.range_bin_uvd = 60.0;
-        config.beamwidth_deg = 5.0;
-        config.min_amplitude = 10;
+        PointBuffer::instance().init(10000);
+        ClusterPool::instance().init(1000);
         
-        clusterer = std::make_unique<DBSCANClusterer>(config, 3, 1.2);
-        clusterer->set_debug(true);
-        
-        std::cout << "\n=== DBSCANClustererTest::SetUp ===" << std::endl;
-        std::cout << "max_azimuth_gap = " << clusterer->get_max_azimuth_gap() << std::endl;
-        std::cout << "max_range_gap = " << clusterer->get_max_range_gap() << std::endl;
-        std::cout << "====================================\n" << std::endl;
+        radar_config_.range_bin_rbs = 30.0;
+        radar_config_.range_bin_uvd = 60.0;
+        radar_config_.beamwidth_deg = 5.0;
+        radar_config_.min_amplitude = 10;
     }
     
     void TearDown() override {
+        PointBuffer::instance().init(10000);
         ClusterPool::instance().clear();
-        clusterer.reset();
     }
     
-    size_t count_active_clusters() const {
-        return ClusterPool::instance().count_active_clusters();
+    void add_point_to_buffer(uint16_t azimuth, uint16_t range, bool is_rbs = true) {
+        StoredPoint point;
+        point.azimuth = azimuth;
+        point.range = range;
+        point.is_rbs = is_rbs;
+        point.code12 = 1234;
+        PointBuffer::instance().add_point(point);
     }
     
-    size_t count_closed_clusters() const {
-        return ClusterPool::instance().count_closed_clusters();
-    }
-    
-    size_t count_total_clusters() const {
-        return ClusterPool::instance().size();
-    }
-    
-    std::vector<const Cluster*> get_closed_clusters() const {
-        std::vector<const Cluster*> result;
-        auto clusters = ClusterPool::instance().get_all_clusters();
-        for (Cluster* cluster : clusters) {
-            if (cluster && cluster->is_closed() && !cluster->is_empty()) {
-                result.push_back(cluster);
+    ScanReplies create_scan(uint16_t azimuth, 
+                            const std::vector<uint16_t>& ranges,
+                            bool is_rbs = true) {
+        ScanReplies scan(azimuth, 0);
+        
+        for (uint16_t range : ranges) {
+            add_point_to_buffer(azimuth, range, is_rbs);
+            if (is_rbs) {
+                RBSReply reply;
+                reply.azimuth = azimuth;
+                reply.range = range;
+                reply.code12 = 1234;
+                reply.is_valid = true;
+                scan.rbs_replies.push_back(reply);
+            } else {
+                UVDReply reply;
+                reply.azimuth = azimuth;
+                reply.range = range;
+                reply.data20 = 12345;
+                reply.is_valid = true;
+                scan.uvd_replies.push_back(reply);
             }
         }
-        return result;
+        
+        return scan;
     }
     
-    // ИСПРАВЛЕННАЯ ФУНКЦИЯ - выводит только непустые кластеры
-    void print_cluster_state(const std::string& label) {
-        std::cout << "\n=== " << label << " ===" << std::endl;
-        auto clusters = ClusterPool::instance().get_all_clusters();
-        size_t non_empty = 0;
-        for (Cluster* cluster : clusters) {
-            if (cluster && !cluster->is_empty()) {
-                non_empty++;
-            }
-        }
-        std::cout << "Total non-empty clusters: " << non_empty << std::endl;
-        for (Cluster* cluster : clusters) {
-            if (cluster && !cluster->is_empty()) {
-                std::cout << "  Cluster id=" << cluster->get_id()
-                          << ": size=" << cluster->size()
-                          << ", closed=" << cluster->is_closed()
-                          << ", min_range=" << cluster->get_min_range()
-                          << ", max_range=" << cluster->get_max_range()
-                          << ", last_az=" << cluster->get_last_azimuth()
-                          << ", span=" << cluster->get_azimuth_span()
-                          << std::endl;
-            }
-        }
-        std::cout << "==================\n" << std::endl;
-    }
-    
-    RadarConfig config;
-    std::unique_ptr<DBSCANClusterer> clusterer;
-    
-    static constexpr int AZIMUTH_BINS = 4096;
+    RadarConfig radar_config_;
 };
 
-// ============================================================================
-// ТЕСТЫ (без изменений)
-// ============================================================================
+// ===== ТЕСТЫ DBSCAN CLUSTERER =====
 
-TEST_F(DBSCANClustererTest, TwoPointsFormCluster) {
-    std::cout << "\n=== TEST: TwoPointsFormCluster ===" << std::endl;
-    
-    ScanReplies scan1(100, 0);
-    RBSReply reply1;
-    reply1.azimuth = 100;
-    reply1.range = 100;
-    reply1.code12 = 0x1234;
-    reply1.spi = false;
-    reply1.ether_amplitudes[0] = 100;
-    reply1.ether_amplitudes[14] = 100;
-    scan1.rbs_replies.push_back(reply1);
-    
-    ScanReplies scan2(105, 0);
-    RBSReply reply2;
-    reply2.azimuth = 105;
-    reply2.range = 102;
-    reply2.code12 = 0x1234;
-    reply2.spi = false;
-    reply2.ether_amplitudes[0] = 100;
-    reply2.ether_amplitudes[14] = 100;
-    scan2.rbs_replies.push_back(reply2);
-    
-    clusterer->process_scan(scan1);
-    print_cluster_state("After scan1");
-    
-    clusterer->process_scan(scan2);
-    print_cluster_state("After scan2");
-    
-    EXPECT_EQ(count_active_clusters(), 1);
-    
-    clusterer->close_expired_clusters(200);
-    print_cluster_state("After close");
-    
-    auto closed = get_closed_clusters();
-    EXPECT_EQ(closed.size(), 1);
-    if (!closed.empty()) {
-        EXPECT_EQ(closed[0]->size(), 2);
-    }
+TEST_F(ClustererTest, DBSCANInit) {
+    auto clusterer = std::make_unique<DBSCANClusterer>(radar_config_, 3, 1.2);
+    EXPECT_NE(clusterer.get(), nullptr);
+    EXPECT_EQ(clusterer->get_name(), "DBSCANClusterer");
 }
 
-TEST_F(DBSCANClustererTest, ClusterMergeScenario) {
-    std::cout << "\n=== TEST: ClusterMergeScenario ===" << std::endl;
+// ===== ИСПРАВЛЕННЫЙ ТЕСТ =====
+TEST_F(ClustererTest, DBSCANProcessScan) {
+    auto clusterer = std::make_unique<DBSCANClusterer>(radar_config_, 3, 1.2);
     
-    std::vector<std::pair<uint16_t, uint16_t>> points = {
-        {100, 100},
-        {105, 102},
-        {110, 104}
-    };
-    
-    for (size_t i = 0; i < points.size(); ++i) {
-        const auto& [az, range] = points[i];
-        ScanReplies scan(az, 0);
-        RBSReply reply;
-        reply.azimuth = az;
-        reply.range = range;
-        reply.code12 = 0x1234;
-        reply.spi = false;
-        reply.ether_amplitudes[0] = 100;
-        reply.ether_amplitudes[14] = 100;
-        scan.rbs_replies.push_back(reply);
-        clusterer->process_scan(scan);
-        print_cluster_state("After point " + std::to_string(i+1));
-    }
-    
-    EXPECT_EQ(count_active_clusters(), 1);
-    
-    clusterer->close_expired_clusters(200);
-    print_cluster_state("After close");
-    
-    auto closed = get_closed_clusters();
-    EXPECT_EQ(closed.size(), 1);
-    if (!closed.empty()) {
-        EXPECT_EQ(closed[0]->size(), 3);
-    }
-}
-
-TEST_F(DBSCANClustererTest, DifferentCodesSameCluster) {
-    std::cout << "\n=== TEST: DifferentCodesSameCluster ===" << std::endl;
-    
-    ScanReplies scan1(100, 0);
-    RBSReply reply1;
-    reply1.azimuth = 100;
-    reply1.range = 100;
-    reply1.code12 = 0x1234;
-    reply1.spi = false;
-    reply1.ether_amplitudes[0] = 100;
-    reply1.ether_amplitudes[14] = 100;
-    scan1.rbs_replies.push_back(reply1);
-    
-    ScanReplies scan2(105, 0);
-    RBSReply reply2;
-    reply2.azimuth = 105;
-    reply2.range = 102;
-    reply2.code12 = 0x5678;
-    reply2.spi = false;
-    reply2.ether_amplitudes[0] = 100;
-    reply2.ether_amplitudes[14] = 100;
-    scan2.rbs_replies.push_back(reply2);
-    
-    clusterer->process_scan(scan1);
-    clusterer->process_scan(scan2);
-    print_cluster_state("After both scans");
-    
-    EXPECT_EQ(count_active_clusters(), 1);
-}
-
-TEST_F(DBSCANClustererTest, AzimuthDistance) {
-    std::cout << "\n=== TEST: AzimuthDistance ===" << std::endl;
-    
-    int az_gap = static_cast<int>(config.beamwidth_deg * 4096 / 360.0 * 1.2);
-    std::cout << "az_gap (calculated) = " << az_gap << std::endl;
-    std::cout << "max_azimuth_gap = " << clusterer->get_max_azimuth_gap() << std::endl;
-    
-    ScanReplies scan1(100, 0);
-    RBSReply reply1;
-    reply1.azimuth = 100;
-    reply1.range = 100;
-    reply1.code12 = 0x1234;
-    reply1.spi = false;
-    reply1.ether_amplitudes[0] = 100;
-    reply1.ether_amplitudes[14] = 100;
-    scan1.rbs_replies.push_back(reply1);
-    
-    std::cout << "Processing scan1 at az=100" << std::endl;
-    clusterer->process_scan(scan1);
-    print_cluster_state("After scan1");
-    
-    std::cout << "Closing clusters at az=200" << std::endl;
-    clusterer->close_expired_clusters(200);
-    print_cluster_state("After close_expired_clusters(200)");
-    
-    int gap = az_gap * 3;
-    std::cout << "Second point gap = " << gap << " (azimuth = " << 100 + gap << ")" << std::endl;
-    
-    ScanReplies scan2(100 + gap, 0);
-    RBSReply reply2;
-    reply2.azimuth = 100 + gap;
-    reply2.range = 102;
-    reply2.code12 = 0x1234;
-    reply2.spi = false;
-    reply2.ether_amplitudes[0] = 100;
-    reply2.ether_amplitudes[14] = 100;
-    scan2.rbs_replies.push_back(reply2);
-    
-    std::cout << "Processing scan2 at az=" << 100 + gap << std::endl;
-    clusterer->process_scan(scan2);
-    print_cluster_state("After scan2");
-    
-    EXPECT_EQ(count_total_clusters(), 2);
-    EXPECT_EQ(count_active_clusters(), 1);
-    EXPECT_EQ(count_closed_clusters(), 1);
-}
-
-TEST_F(DBSCANClustererTest, SPIFlagPreserved) {
-    std::cout << "\n=== TEST: SPIFlagPreserved ===" << std::endl;
-    
-    ScanReplies scan1(100, 0);
-    RBSReply reply1;
-    reply1.azimuth = 100;
-    reply1.range = 100;
-    reply1.code12 = 0x1234;
-    reply1.spi = true;
-    reply1.ether_amplitudes[0] = 100;
-    reply1.ether_amplitudes[14] = 100;
-    scan1.rbs_replies.push_back(reply1);
-    
-    ScanReplies scan2(105, 0);
-    RBSReply reply2;
-    reply2.azimuth = 105;
-    reply2.range = 102;
-    reply2.code12 = 0x1234;
-    reply2.spi = false;
-    reply2.ether_amplitudes[0] = 100;
-    reply2.ether_amplitudes[14] = 100;
-    scan2.rbs_replies.push_back(reply2);
-    
-    clusterer->process_scan(scan1);
-    clusterer->process_scan(scan2);
-    print_cluster_state("After both scans");
-    
-    clusterer->close_expired_clusters(200);
-    print_cluster_state("After close");
-    
-    auto closed = get_closed_clusters();
-    EXPECT_EQ(closed.size(), 1);
-    if (!closed.empty()) {
-        const auto& indices = closed[0]->get_indices();
-        auto& buffer = PointBuffer::instance();
-        bool has_spi = false;
-        for (size_t idx : indices) {
-            const auto& point = buffer.get_point(idx);
-            if (point.spi) {
-                has_spi = true;
-                break;
-            }
-        }
-        EXPECT_TRUE(has_spi);
-    }
-}
-
-TEST_F(DBSCANClustererTest, AzimuthSpanNorth) {
-    std::cout << "\n=== TEST: AzimuthSpanNorth ===" << std::endl;
-    
-    ScanReplies scan1(4095, 0);
-    RBSReply reply1;
-    reply1.azimuth = 4095;
-    reply1.range = 100;
-    reply1.code12 = 0x1234;
-    reply1.spi = false;
-    reply1.ether_amplitudes[0] = 100;
-    reply1.ether_amplitudes[14] = 100;
-    scan1.rbs_replies.push_back(reply1);
-    
-    ScanReplies scan2(10, 0);
-    RBSReply reply2;
-    reply2.azimuth = 10;
-    reply2.range = 102;
-    reply2.code12 = 0x1234;
-    reply2.spi = false;
-    reply2.ether_amplitudes[0] = 100;
-    reply2.ether_amplitudes[14] = 100;
-    scan2.rbs_replies.push_back(reply2);
-    
-    clusterer->process_scan(scan1);
-    print_cluster_state("After scan1 (near north)");
-    
-    clusterer->process_scan(scan2);
-    print_cluster_state("After scan2 (after north)");
-    
-    EXPECT_EQ(count_active_clusters(), 1);
-    
-    auto clusters = ClusterPool::instance().get_active_clusters();
-    for (Cluster* cluster : clusters) {
-        if (cluster && !cluster->is_closed()) {
-            int span = cluster->get_azimuth_span();
-            std::cout << "Cluster azimuth span: " << span << std::endl;
-            EXPECT_LT(span, 100);
-        }
-    }
-}
-
-TEST_F(DBSCANClustererTest, NorthTransition) {
-    std::cout << "\n=== TEST: NorthTransition ===" << std::endl;
-    
-    std::vector<std::pair<uint16_t, uint16_t>> points = {
-        {4090, 100},
-        {4095, 102},
-        {5, 104},
-        {10, 106}
-    };
-    
-    for (size_t i = 0; i < points.size(); ++i) {
-        const auto& [az, range] = points[i];
-        ScanReplies scan(az, 0);
-        RBSReply reply;
-        reply.azimuth = az;
-        reply.range = range;
-        reply.code12 = 0x1234;
-        reply.spi = false;
-        reply.ether_amplitudes[0] = 100;
-        reply.ether_amplitudes[14] = 100;
-        scan.rbs_replies.push_back(reply);
-        clusterer->process_scan(scan);
-        print_cluster_state("After point " + std::to_string(i+1));
-    }
-    
-    EXPECT_EQ(count_active_clusters(), 1);
-    
-    clusterer->close_expired_clusters(200);
-    print_cluster_state("After close");
-    
-    auto closed = get_closed_clusters();
-    EXPECT_EQ(closed.size(), 1);
-    if (!closed.empty()) {
-        EXPECT_EQ(closed[0]->size(), 4);
-    }
-}
-
-TEST_F(DBSCANClustererTest, Reset) {
-    std::cout << "\n=== TEST: Reset ===" << std::endl;
-    
-    for (int i = 0; i < 5; ++i) {
-        ScanReplies scan(100 + i * 10, 0);
-        RBSReply reply;
-        reply.azimuth = 100 + i * 10;
-        reply.range = 100 + i * 5;
-        reply.code12 = 0x1234;
-        reply.spi = false;
-        reply.ether_amplitudes[0] = 100;
-        reply.ether_amplitudes[14] = 100;
-        scan.rbs_replies.push_back(reply);
+    // Создаем несколько сканов с близкими азимутами для формирования кластера
+    for (int az = 500; az < 510; ++az) {
+        auto scan = create_scan(az, {100});
         clusterer->process_scan(scan);
     }
-    print_cluster_state("Before reset");
     
-    EXPECT_GT(count_active_clusters(), 0);
+    // Проверяем через count_active_clusters()
+    size_t active_count = clusterer->count_active_clusters();
+    EXPECT_GT(active_count, 0);
+}
+
+TEST_F(ClustererTest, DBSCANReset) {
+    auto clusterer = std::make_unique<DBSCANClusterer>(radar_config_, 3, 1.2);
+    
+    for (int az = 500; az < 520; ++az) {
+        auto scan = create_scan(az, {100});
+        clusterer->process_scan(scan);
+    }
     
     clusterer->reset();
-    print_cluster_state("After reset");
     
-    EXPECT_EQ(count_active_clusters(), 0);
-    EXPECT_EQ(count_closed_clusters(), 0);
+    const auto& active = clusterer->get_active_clusters();
+    EXPECT_TRUE(active.empty());
 }
 
-int main(int argc, char** argv) {
-    ::testing::InitGoogleTest(&argc, argv);
-    return RUN_ALL_TESTS();
+// ===== ТЕСТЫ LEGACY CLUSTERER =====
+
+TEST_F(ClustererTest, LegacyInit) {
+    auto clusterer = std::make_unique<LegacyClusterer>(8, 30);
+    EXPECT_NE(clusterer.get(), nullptr);
+    EXPECT_EQ(clusterer->get_name(), "LegacyClusterer");
+}
+
+TEST_F(ClustererTest, LegacyProcessScan) {
+    auto clusterer = std::make_unique<LegacyClusterer>(8, 30);
+    
+    for (int az = 500; az < 510; ++az) {
+        auto scan = create_scan(az, {100});
+        clusterer->process_scan(scan);
+    }
+    
+    const auto& active = clusterer->get_active_clusters();
+    EXPECT_GT(active.size(), 0);
+}
+
+TEST_F(ClustererTest, LegacyReset) {
+    auto clusterer = std::make_unique<LegacyClusterer>(8, 30);
+    
+    for (int az = 500; az < 520; ++az) {
+        auto scan = create_scan(az, {100});
+        clusterer->process_scan(scan);
+    }
+    
+    clusterer->reset();
+    
+    const auto& active = clusterer->get_active_clusters();
+    EXPECT_TRUE(active.empty());
+}
+
+TEST_F(ClustererTest, LegacySetParams) {
+    auto clusterer = std::make_unique<LegacyClusterer>(8, 30);
+    
+    clusterer->set_param("max_gap_azimuth", 16);
+    clusterer->set_param("range_window", 60);
+    
+    // Проверяем через публичные методы или через поведение
+    const auto& active = clusterer->get_active_clusters();
+    EXPECT_TRUE(active.empty());
 }

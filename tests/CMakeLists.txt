@@ -635,3 +635,28 @@ add_test(NAME test_integration_full
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/tests
 )
 
+
+# Тест Калмана
+add_executable(test_v2_kalman_filter
+    test_v2_kalman_filter.cpp
+)
+
+target_link_libraries(test_v2_kalman_filter
+    vrl_radar
+    GTest::gtest_main
+)
+
+target_compile_definitions(test_v2_kalman_filter
+    PRIVATE
+        $<$<BOOL:${ENABLE_VERBOSE_LOGGING}>:ENABLE_VERBOSE_LOGGING>
+)
+
+set_target_properties(test_v2_kalman_filter PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests"
+)
+
+add_test(NAME test_v2_kalman_filter 
+    COMMAND test_v2_kalman_filter
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/tests
+)
+
